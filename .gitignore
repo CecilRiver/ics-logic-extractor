@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+# 由 scripts/copy-pdf-worker.mjs 从 node_modules 复制，构建时自动生成
+public/pdf.worker.min.mjs
+
+.DS_Store
+Thumbs.db
+*.log
