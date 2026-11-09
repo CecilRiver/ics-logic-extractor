@@ -20,7 +20,12 @@ import { FileText, Network, ShieldCheck } from 'lucide-vue-next';
     </header>
 
     <main class="mp-main">
-      <RouterView />
+      <!-- 缓存路由页面：切到流量解析再回来时，手册上传的分段与抽取结果不会丢失。 -->
+      <RouterView v-slot="{ Component }">
+        <KeepAlive>
+          <component :is="Component" />
+        </KeepAlive>
+      </RouterView>
     </main>
   </div>
 </template>
