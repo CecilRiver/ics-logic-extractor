@@ -14,7 +14,7 @@ import { FileText, Network, ShieldCheck } from 'lucide-vue-next';
       </RouterLink>
 
       <nav class="mp-nav" aria-label="工具导航">
-        <RouterLink to="/manual"><FileText :size="15" />操作手册提取</RouterLink>
+        <RouterLink to="/manual"><FileText :size="15" />操作规范解析</RouterLink>
         <RouterLink to="/traffic"><Network :size="15" />流量解析<em>待接入</em></RouterLink>
       </nav>
     </header>

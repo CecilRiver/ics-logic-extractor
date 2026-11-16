@@ -42,30 +42,37 @@ export interface RunOptions {
   signal: AbortSignal;
   /** 每次阶段状态变化时回调，交给 Vue 更新界面。 */
   onUpdate: (run: SegmentRun) => void;
+  /** 已存在的分段结果：有设备结果时跳过设备阶段，直接做属性提取。 */
+  existing?: Record<number, SegmentRun>;
 }
 
 /**
  * 分段级流水线：设备 → 业务拓扑 → 控制逻辑。
  * 每段独立串行执行，单段失败不影响其余分段；缺少 API Key 等致命错误会立即中断整轮。
  */
-export async function runExtraction({ segments, signal, onUpdate }: RunOptions): Promise<{ runs: SegmentRun[]; model: string }> {
+export async function runExtraction({ segments, signal, onUpdate, existing }: RunOptions): Promise<{ runs: SegmentRun[]; model: string }> {
   const runs: SegmentRun[] = [];
   let model = '';
   for (const segment of segments) {
     if (signal.aborted) throw new DOMException('已取消', 'AbortError');
     const t0 = Date.now();
-    const run = createRun(segment);
+    const previous = existing?.[segment.index];
+    // 属性提取模式保留已抽取的设备结果，只重跑拓扑与逻辑。
+    const run = previous ? { ...previous, issues: [], status: 'running' as const, stage: null, error: '', elapsedMs: 0 } : createRun(segment);
     run.status = 'running';
-    run.stage = 'devices';
-    onUpdate({ ...run });
+    model = run.model || model;
 
     try {
-      const devices = await callExtract({ stage: 'devices', text: segment.text }, signal);
-      model = devices.model || model;
-      run.model = devices.model || run.model;
-      run.raw.devices = devices.raw;
-      run.devices = devices.data as ManualDevice[];
-      run.issues.push(...devices.issues);
+      if (!run.devices.length) {
+        run.stage = 'devices';
+        onUpdate({ ...run });
+        const devices = await callExtract({ stage: 'devices', text: segment.text }, signal);
+        model = devices.model || model;
+        run.model = devices.model || run.model;
+        run.raw.devices = devices.raw;
+        run.devices = devices.data as ManualDevice[];
+        run.issues.push(...devices.issues);
+      }
 
       run.stage = 'topology';
       onUpdate({ ...run });

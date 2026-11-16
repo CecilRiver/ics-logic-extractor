@@ -164,7 +164,7 @@ describe('manual merge and export', () => {
       model: 'deepseek-chat',
       segments: mergeExtractions(segments).devices.length ? segments : [],
     }, mergeExtractions(segments));
-    expect(markdown).toContain('# 操作手册逻辑抽取结果');
+    expect(markdown).toContain('# 操作规范逻辑抽取结果');
     expect(markdown).toContain('| 给水泵 |');
     expect(markdown).toContain('来源分段');
     expect(markdown).toContain('操作对象');

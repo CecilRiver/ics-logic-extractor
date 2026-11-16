@@ -264,13 +264,13 @@ function markdownTable(headers: string[], rows: string[][]): string {
 
 export function buildMarkdown(extraction: ManualExtraction, merged: ManualMerged): string {
   const lines: string[] = [
-    '# 操作手册逻辑抽取结果',
+    '# 操作规范逻辑抽取结果',
     '',
     `- 来源文件：${extraction.source}`,
     `- 导出时间：${extraction.exportedAt}`,
     `- 模型：${extraction.model}`,
     `- 分段数量：${extraction.segments.length}`,
-    '- 定级说明：本结果由大模型从操作手册中抽取，仅作人工复核的初稿，不自动写入 VeriPro 测试归档。',
+    '- 定级说明：本结果由大模型从操作规范中抽取，仅作人工复核的初稿，不自动写入 VeriPro 测试归档。',
     '',
     '## 设备清单',
     '',

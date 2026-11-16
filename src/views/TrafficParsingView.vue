@@ -36,7 +36,7 @@ const PLAN = [
       <div class="mp-eyebrow">PCAP / CONTROL PROGRAM</div>
       <h2>流量解析能力待接入</h2>
       <p>
-        当前版本先开放操作手册提取。流量解析页已保留独立路由与页面骨架，
+        当前版本先开放操作规范解析。流量解析页已保留独立路由与页面骨架，
         后续接入抓包解析后，将从 PCAP 中提取协议会话、主客体读写关系与调用时序。
       </p>
       <div class="tp-actions">

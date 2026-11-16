@@ -251,7 +251,9 @@ function onFooterChange(event: Event) {
   options.value.footerPct = clamp(Number((event.target as HTMLInputElement).value), 0, 25, 0);
 }
 
-async function start(targets: ManualSegment[] = segments.value) {
+type RunMode = 'full' | 'attributes';
+
+async function start(targets: ManualSegment[] = segments.value, mode: RunMode = 'full') {
   if (running.value || !targets.length) return;
   if (!health.value?.configured) {
     fatalError.value = '未配置 DEEPSEEK_API_KEY，暂时无法抽取。';
@@ -265,20 +267,31 @@ async function start(targets: ManualSegment[] = segments.value) {
   fatalError.value = '';
   notice.value = '';
 
-  const seeded = { ...runs.value };
-  for (const segment of targets) seeded[segment.index] = createRun(segment);
-  runs.value = seeded;
+  if (mode === 'full') {
+    const seeded = { ...runs.value };
+    for (const segment of targets) seeded[segment.index] = createRun(segment);
+    runs.value = seeded;
+  }
 
   try {
     const result = await runExtraction({
       segments: targets,
       signal: controller.signal,
+      // 属性提取模式复用已抽取的设备结果，从业务拓扑阶段继续。
+      existing: mode === 'attributes' ? runs.value : undefined,
       onUpdate: (run) => {
         runs.value = { ...runs.value, [run.index]: run };
       },
     });
     const failedCount = result.runs.filter((run) => run.status === 'error').length;
     runFinished.value = true;
+    if (mode === 'attributes' && result.runs.some((run) => run.status === 'done')) {
+      tab.value = 'topology';
+      notice.value = failedCount
+        ? `操作规范属性提取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
+        : '操作规范属性提取完成：操作对象与操作值域见「业务拓扑」「控制逻辑」表。';
+      return;
+    }
     notice.value = failedCount
       ? `抽取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
       : '抽取完成，可切换分段复核并导出结果。';
@@ -456,8 +469,12 @@ const canStart = computed(
 );
 
 const startLabel = computed(() =>
-  running.value ? '运行中…' : completed.value ? '重新运行全部' : '开始运行',
+  running.value ? '运行中…' : completed.value ? '重新解析全部' : '开始解析',
 );
+
+function startAttributes() {
+  void start(undefined, 'attributes');
+}
 
 const activeIndex = computed({
   get: () => activeSegment.value,
@@ -512,13 +529,13 @@ function rawLength(stage: ManualStage): number {
                 : '检查服务中…'
           }}
         </span>
-        <span class="mp-muted">上传操作手册后，按分段依次抽取设备、业务拓扑与控制逻辑；结果可复核并导出。</span>
+        <span class="mp-muted">上传操作规范后，按分段依次抽取设备、业务拓扑与控制逻辑；可单独执行操作规范属性提取并导出。</span>
       </div>
 
       <div class="mp-grid">
         <section class="mp-card">
           <div class="mp-card-head">
-            <div><Upload :size="16" /><h2>上传手册</h2></div>
+            <div><Upload :size="16" /><h2>上传操作规范</h2></div>
             <button v-if="fileMeta" class="mp-text-btn" :disabled="running" @click="reset">更换文件</button>
           </div>
 
@@ -645,7 +662,7 @@ function rawLength(stage: ManualStage): number {
           <div v-if="segments.length === 0" class="mp-placeholder">
             <FileText :size="26" />
             <b>还没有可抽取的分段</b>
-            <span>上传手册后，将按页数与字符上限自动切分。</span>
+            <span>上传操作规范后，将按页数与字符上限自动切分。</span>
           </div>
 
           <template v-else>
@@ -667,6 +684,9 @@ function rawLength(stage: ManualStage): number {
               <button class="mp-btn primary" :disabled="!canStart" @click="start()">
                 <LoaderCircle v-if="running" :size="15" class="mp-spin" />
                 <Play v-else :size="15" />{{ startLabel }}
+              </button>
+              <button class="mp-btn" :disabled="!canStart" @click="startAttributes">
+                <Sparkles :size="14" />操作规范属性提取
               </button>
               <button v-if="running" class="mp-btn danger" @click="stop">
                 <Square :size="13" />停止

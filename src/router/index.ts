@@ -8,7 +8,7 @@ const routes: RouteRecordRaw[] = [
     path: '/manual',
     name: 'manual',
     component: ManualExtractionView,
-    meta: { title: '操作手册提取' },
+    meta: { title: '操作规范解析' },
   },
   {
     path: '/traffic',
