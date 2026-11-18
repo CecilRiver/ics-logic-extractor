@@ -81,6 +81,34 @@ export interface ManualExtraction {
   segments: ManualSegmentExtraction[];
 }
 
+export interface ManualRunSegmentSummary {
+  index: number;
+  pageStart: number;
+  pageEnd: number;
+  chars: number;
+  status: string;
+}
+
+export interface ManualRunSummary {
+  name: string;
+  source: string;
+  createdAt: string;
+  updatedAt?: string;
+  model: string;
+  pageCount: number;
+  segmentCount: number;
+  deviceCount: number;
+  topologyCount: number;
+  logicCount: number;
+}
+
+export interface ManualRunMeta extends ManualRunSummary {
+  schemaVersion: 1;
+  fileMeta: { name: string; size: number; kind: 'pdf' | 'text'; pageCount: number };
+  options: { pagesPerSegment: number; maxChars: number; headerPct: number; footerPct: number };
+  segments: ManualRunSegmentSummary[];
+}
+
 export interface Sourced<T> {
   row: T;
   sources: number[];

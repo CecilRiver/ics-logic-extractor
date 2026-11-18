@@ -1,0 +1,70 @@
+.mp-history {
+  margin-top: 18px;
+}
+
+.mp-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mp-run-list {
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid #e6edf5;
+  border-radius: 10px;
+}
+
+.mp-run-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.mp-run-list li:last-child {
+  border-bottom: 0;
+}
+
+.mp-run-list li.active {
+  background: #f4f8fc;
+}
+
+.mp-run-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.mp-run-main b {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.mp-run-main small {
+  color: var(--mp-muted);
+  font-size: 11px;
+}
+
+.mp-run-sha {
+  color: #52657a;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .mp-run-list li {
+    flex-wrap: wrap;
+  }
+
+  .mp-run-sha {
+    width: 100%;
+    order: 3;
+  }
+}

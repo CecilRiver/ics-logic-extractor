@@ -6,6 +6,7 @@ import {
   Download,
   FileJson,
   FileText,
+  History,
   LoaderCircle,
   Play,
   RotateCcw,
@@ -23,6 +24,7 @@ import {
   type ManualDevice,
   type ManualExtraction,
   type ManualLogicRow,
+  type ManualRunSummary,
   type ManualSegment,
   type ManualSegmentExtraction,
   type ManualStage,
@@ -31,11 +33,18 @@ import {
 } from '@/domain/manual';
 import { fetchHealth } from '@/services/manual/client';
 import { buildSegments } from '@/services/manual/chunk';
+import {
+  listManualRuns,
+  loadManualRun,
+  saveManualRun,
+  type ManualRunPayload,
+} from '@/services/manual/history';
 import { createRun, runExtraction, type SegmentRun } from '@/services/manual/orchestrator';
 import { extractPdfPages, splitPlainText } from '@/services/manual/pdf';
 import DevicesTable from './DevicesTable.vue';
 import LogicTable from './LogicTable.vue';
 import TopologyTable from './TopologyTable.vue';
+import '@/styles/history.css';
 import './manual-extraction.css';
 
 type Tab = 'devices' | 'topology' | 'logic' | 'raw';
@@ -85,6 +94,11 @@ const tab = ref<Tab>('devices');
 const health = ref<{ configured: boolean; model: string } | null>(null);
 const healthError = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
+const historyRuns = ref<ManualRunSummary[]>([]);
+const historyName = ref('');
+const historyLoading = ref(false);
+const historyOpening = ref(false);
+const historyError = ref('');
 
 let abortController: AbortController | null = null;
 let healthController: AbortController | null = null;
@@ -109,12 +123,100 @@ onMounted(() => {
       health.value = null;
       healthError.value = errorMessage(error);
     });
+  void refreshHistory();
 });
 
 onUnmounted(() => {
   healthController?.abort();
   abortController?.abort();
 });
+
+function formatHistoryTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
+
+async function refreshHistory() {
+  historyLoading.value = true;
+  try {
+    historyRuns.value = await listManualRuns();
+    historyError.value = '';
+  } catch (error) {
+    historyError.value = errorMessage(error);
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+function historyPayload(): ManualRunPayload | null {
+  if (!fileMeta.value || !pages.value.length) return null;
+  const active = Object.values(runs.value).filter(
+    (run) => run.status === 'done' || run.status === 'error',
+  );
+  if (!active.some((run) => run.status === 'done')) return null;
+  return {
+    source: fileMeta.value.name,
+    model: modelName.value,
+    fileMeta: { ...fileMeta.value },
+    options: { ...options.value },
+    segments: segments.value.map((segment) => {
+      const run = runs.value[segment.index];
+      return {
+        index: segment.index,
+        pageStart: segment.pageStart,
+        pageEnd: segment.pageEnd,
+        chars: segment.chars,
+        status: run?.status ?? 'pending',
+      };
+    }),
+    pages: pages.value,
+    runs: active,
+  };
+}
+
+async function saveHistory(updateExisting: boolean) {
+  const payload = historyPayload();
+  if (!payload) return;
+  try {
+    const name = updateExisting && historyName.value
+      ? await saveManualRun(payload, historyName.value)
+      : await saveManualRun(payload);
+    historyName.value = name;
+    historyError.value = '';
+    await refreshHistory();
+  } catch (error) {
+    historyError.value = `历史保存失败：${errorMessage(error)}`;
+  }
+}
+
+async function openHistory(name: string) {
+  if (running.value) return;
+  historyOpening.value = true;
+  historyError.value = '';
+  try {
+    const detail = await loadManualRun(name);
+    const loaded: Record<number, SegmentRun> = {};
+    for (const run of detail.runs) loaded[run.index] = run;
+    file.value = null;
+    fileMeta.value = detail.meta.fileMeta;
+    pages.value = detail.pages;
+    options.value = { ...detail.meta.options };
+    runs.value = loaded;
+    readState.value = 'ready';
+    readError.value = '';
+    warnings.value = [];
+    fatalError.value = '';
+    notice.value = `已载入历史运行：${detail.meta.source}`;
+    activeSegment.value = 'all';
+    tab.value = 'devices';
+    runFinished.value = true;
+    historyName.value = name;
+  } catch (error) {
+    historyError.value = errorMessage(error);
+  } finally {
+    historyOpening.value = false;
+  }
+}
 
 // 分段口径变化后旧结果不再对应，直接清空，避免页码错位。
 function updateChunkOptions(patch: Partial<typeof options.value>) {
@@ -124,6 +226,7 @@ function updateChunkOptions(patch: Partial<typeof options.value>) {
   fatalError.value = '';
   notice.value = '';
   runFinished.value = false;
+  historyName.value = '';
 }
 
 async function loadPdf(source: File) {
@@ -134,6 +237,7 @@ async function loadPdf(source: File) {
   activeSegment.value = 'all';
   fatalError.value = '';
   notice.value = '';
+  historyName.value = '';
   try {
     const result = await extractPdfPages(source, {
       headerRatio: options.value.headerPct / 100,
@@ -148,7 +252,7 @@ async function loadPdf(source: File) {
       pageCount: result.pages.length,
     };
     readState.value = 'ready';
-    notice.value = '文档已就绪，点击「开始解析」生成业务逻辑。';
+    notice.value = '文档已就绪，点击「操作规范属性提取」生成业务逻辑。';
   } catch (error) {
     pages.value = [];
     readState.value = 'error';
@@ -178,6 +282,8 @@ async function loadFile(next: File) {
   fatalError.value = '';
   notice.value = '';
   runFinished.value = false;
+  historyName.value = '';
+  historyError.value = '';
 
   if (ext === 'pdf') {
     await loadPdf(next);
@@ -191,7 +297,7 @@ async function loadFile(next: File) {
     pages.value = parts;
     fileMeta.value = { name: next.name, size: next.size, kind: 'text', pageCount: 1 };
     readState.value = 'ready';
-    notice.value = '文档已就绪，点击「开始解析」生成业务逻辑。';
+    notice.value = '文档已就绪，点击「操作规范属性提取」生成业务逻辑。';
     if (!parts.length) warnings.value = ['文件中没有可抽取的文本。'];
   } catch (error) {
     readState.value = 'error';
@@ -230,6 +336,8 @@ function reset() {
   activeSegment.value = 'all';
   tab.value = 'devices';
   runFinished.value = false;
+  historyName.value = '';
+  historyError.value = '';
   if (fileInput.value) fileInput.value.value = '';
 }
 
@@ -277,6 +385,7 @@ async function start(targets: ManualSegment[] = segments.value, mode: RunMode = 
     const seeded = { ...runs.value };
     for (const segment of targets) seeded[segment.index] = createRun(segment);
     runs.value = seeded;
+    historyName.value = '';
   }
 
   try {
@@ -296,11 +405,13 @@ async function start(targets: ManualSegment[] = segments.value, mode: RunMode = 
       notice.value = failedCount
         ? `操作规范属性提取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
         : '操作规范属性提取完成：操作对象与操作值域见「业务拓扑」「控制逻辑」表。';
+      void saveHistory(true);
       return;
     }
     notice.value = failedCount
       ? `抽取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
       : '抽取完成，可切换分段复核并导出结果。';
+    void saveHistory(false);
   } catch (error) {
     if (isAbort(error)) {
       notice.value = '已停止抽取。未完成的分段可以单独重试。';
@@ -327,6 +438,7 @@ function clearResults() {
   runs.value = {};
   activeSegment.value = 'all';
   notice.value = '';
+  historyName.value = '';
 }
 
 function reparsePdf() {
@@ -474,9 +586,7 @@ const canStart = computed(
     readState.value === 'ready',
 );
 
-const startLabel = computed(() =>
-  running.value ? '运行中…' : completed.value ? '重新解析全部' : '开始解析',
-);
+const startLabel = computed(() => (running.value ? '运行中…' : '操作规范属性提取'));
 
 function startAttributes() {
   void start(undefined, 'attributes');
@@ -535,7 +645,7 @@ function rawLength(stage: ManualStage): number {
                 : '检查服务中…'
           }}
         </span>
-        <span class="mp-muted">上传操作规范后，按分段依次抽取设备、业务拓扑与控制逻辑；可单独执行操作规范属性提取并导出。</span>
+        <span class="mp-muted">上传操作规范后，点击「操作规范属性提取」依次生成设备、业务拓扑与控制逻辑；结果可复核并导出。</span>
       </div>
 
       <div class="mp-grid">
@@ -645,7 +755,7 @@ function rawLength(stage: ManualStage): number {
           </div>
 
           <button
-            v-if="fileMeta?.kind === 'pdf'"
+            v-if="fileMeta?.kind === 'pdf' && file"
             class="mp-btn"
             :disabled="running || readState === 'reading'"
             @click="reparsePdf"
@@ -692,12 +802,9 @@ function rawLength(stage: ManualStage): number {
             </div>
 
             <div class="mp-run-actions">
-              <button class="mp-btn primary" :disabled="!canStart" @click="start()">
+              <button class="mp-btn primary" :disabled="!canStart" @click="startAttributes">
                 <LoaderCircle v-if="running" :size="15" class="mp-spin" />
                 <Play v-else :size="15" />{{ startLabel }}
-              </button>
-              <button class="mp-btn" :disabled="!canStart" @click="startAttributes">
-                <Sparkles :size="14" />操作规范属性提取
               </button>
               <button v-if="running" class="mp-btn danger" @click="stop">
                 <Square :size="13" />停止
@@ -762,6 +869,52 @@ function rawLength(stage: ManualStage): number {
           </template>
         </section>
       </div>
+
+      <section class="mp-card mp-history">
+        <div class="mp-card-head">
+          <div><History :size="16" /><h2>运行历史</h2></div>
+          <div class="mp-history-actions">
+            <span class="mp-muted">{{ historyRuns.length }} 次运行</span>
+            <button
+              class="mp-btn"
+              type="button"
+              :disabled="historyLoading || historyOpening"
+              @click="refreshHistory"
+            >
+              <RotateCcw :size="13" />{{ historyLoading ? '刷新中…' : '刷新' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="historyError" class="mp-hint bad">
+          <XCircle :size="14" />{{ historyError }}
+        </div>
+        <div v-else-if="!historyRuns.length" class="mp-placeholder compact">
+          <History :size="22" />
+          <b>暂无历史运行</b>
+          <span>完成一次操作规范解析后，历史记录会出现在这里。</span>
+        </div>
+        <ul v-else class="mp-run-list">
+          <li v-for="item in historyRuns" :key="item.name" :class="{ active: historyName === item.name }">
+            <div class="mp-run-main">
+              <b>{{ item.source || item.name }}</b>
+              <small>
+                {{ formatHistoryTime(item.updatedAt || item.createdAt) }} ·
+                {{ item.segmentCount }} 段 · 设备 {{ item.deviceCount }} /
+                拓扑 {{ item.topologyCount }} / 逻辑 {{ item.logicCount }}
+                <template v-if="item.model"> · {{ item.model }}</template>
+              </small>
+            </div>
+            <button
+              class="mp-btn"
+              type="button"
+              :disabled="running || historyOpening"
+              @click="openHistory(item.name)"
+            >
+              {{ historyName === item.name ? '当前' : '查看' }}
+            </button>
+          </li>
+        </ul>
+      </section>
 
       <section v-if="Object.keys(runs).length > 0" id="manual-results" class="mp-card mp-results">
         <div class="mp-card-head">

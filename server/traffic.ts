@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { TrafficRunDetail, TrafficRunSummary } from '../src/domain/traffic.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -261,9 +262,8 @@ async function cleanupIncoming(job: TrafficJob): Promise<void> {
   await rm(path, { force: true }).catch(() => undefined);
 }
 
-function runVariables(job: TrafficJob): Promise<TrafficVariable[]> {
-  if (!job.result) return Promise.reject(new Error('还没有可用的解析结果'));
-  const { command, args, env } = pythonArgs(['variables', '--run-dir', job.result.runDir]);
+function runVariablesForDir(runDir: string): Promise<TrafficVariable[]> {
+  const { command, args, env } = pythonArgs(['variables', '--run-dir', runDir]);
 
   return new Promise<TrafficVariable[]>((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd: pythonDir, env, windowsHide: true });
@@ -400,7 +400,7 @@ async function extractVariables(job: TrafficJob, res: ServerResponse): Promise<v
   job.variablesRunning = true;
   job.variablesError = undefined;
   try {
-    const variables = await runVariables(job);
+    const variables = await runVariablesForDir(job.result.runDir);
     job.variables = variables;
     send(res, 200, { variables, runDir: job.result.runDir });
   } catch (error) {
@@ -410,6 +410,123 @@ async function extractVariables(job: TrafficJob, res: ServerResponse): Promise<v
     job.variablesRunning = false;
     job.updatedAt = Date.now();
   }
+}
+
+const RUN_NAME_RE = /^[0-9A-Za-z._-]+$/;
+
+function runDirFor(name: string): string | null {
+  if (!RUN_NAME_RE.test(name) || name.startsWith('.')) return null;
+  const dir = resolve(dataRoot, name);
+  if (!dir.startsWith(`${dataRoot}${sep}`)) return null;
+  return dir;
+}
+
+async function readManifest(dir: string): Promise<Record<string, unknown> | null> {
+  try {
+    const value = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readRunVariables(dir: string): Promise<TrafficVariable[] | null> {
+  try {
+    const value = JSON.parse(await readFile(join(dir, '03_变量', '变量表.json'), 'utf8')) as {
+      variables?: unknown;
+    };
+    return Array.isArray(value.variables) ? (value.variables as TrafficVariable[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listRuns(): Promise<TrafficRunSummary[]> {
+  let entries;
+  try {
+    entries = await readdir(dataRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const runs: TrafficRunSummary[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || !RUN_NAME_RE.test(entry.name)) continue;
+    const dir = join(dataRoot, entry.name);
+    const manifest = await readManifest(dir);
+    if (!manifest) continue;
+
+    const info = await stat(dir).catch(() => null);
+    const variables = await readRunVariables(dir);
+    const units = Array.isArray(manifest.units) ? manifest.units : [];
+    runs.push({
+      name: entry.name,
+      plc: String(manifest.plc ?? ''),
+      time: String(manifest.time ?? ''),
+      imageBytes: Number(manifest.image_bytes ?? 0),
+      records: Number(manifest.records ?? 0),
+      sha256: String(manifest.sha256 ?? ''),
+      unitCount: units.length,
+      variableCount: variables?.length ?? 0,
+      hasVariables: variables !== null,
+      modifiedAt: info ? info.mtime.toISOString() : '',
+    });
+  }
+
+  runs.sort((a, b) => (b.modifiedAt || b.name).localeCompare(a.modifiedAt || a.name));
+  return runs;
+}
+
+async function loadRun(name: string): Promise<TrafficRunDetail | null> {
+  const dir = runDirFor(name);
+  if (!dir) return null;
+  const manifest = await readManifest(dir);
+  if (!manifest) return null;
+
+  const sourceDir = join(dir, '02_逆向');
+  let files: string[];
+  try {
+    files = (await readdir(sourceDir))
+      .filter((file) => file.endsWith('.st'))
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return null;
+  }
+
+  const meta = Array.isArray(manifest.units)
+    ? (manifest.units as Array<Record<string, unknown>>)
+    : [];
+  const units: TrafficUnit[] = [];
+  for (let i = 0; i < files.length; i += 1) {
+    const text = await readFile(join(sourceDir, files[i]), 'utf8').catch(() => '');
+    const info = meta[i] ?? {};
+    const offset = files[i].match(/0x([0-9A-Fa-f]+)/)?.[1];
+    units.push({
+      index: i + 1,
+      name: String(info.name ?? (offset ? `单元 ${offset}` : `单元 ${i + 1}`)),
+      kind: String(info.kind ?? '功能块'),
+      chars: text.length,
+      status: '解析成功',
+      declared: Boolean(info.declared),
+      streamOffset: offset ? `0x${offset}` : '',
+      text,
+    });
+  }
+
+  const result: TrafficResult = {
+    plc: String(manifest.plc ?? ''),
+    port: Number(manifest.port ?? 502),
+    session: String(manifest.session ?? ''),
+    imageBytes: Number(manifest.image_bytes ?? 0),
+    records: Number(manifest.records ?? 0),
+    sha256: String(manifest.sha256 ?? ''),
+    declarations: Boolean(manifest.stu) || units.some((unit) => unit.declared),
+    stu: manifest.stu ? String(manifest.stu) : null,
+    runDir: dir,
+    units,
+  };
+
+  return { name, result, variables: await readRunVariables(dir) };
 }
 
 export async function trafficMiddleware(
@@ -422,6 +539,39 @@ export async function trafficMiddleware(
   if (pathname.startsWith('/api/traffic')) pathname = pathname.slice('/api/traffic'.length) || '/';
 
   try {
+    if (pathname === '/runs' && req.method === 'GET') {
+      send(res, 200, { runs: await listRuns() });
+      return;
+    }
+
+    const runVarMatch = pathname.match(/^\/runs\/([0-9A-Za-z._-]+)\/variables$/);
+    if (runVarMatch && req.method === 'POST') {
+      const name = runVarMatch[1];
+      const dir = runDirFor(name);
+      if (!dir || !(await readManifest(dir))) {
+        fail(res, 404, 'not_found', '运行记录不存在');
+        return;
+      }
+      try {
+        const variables = await runVariablesForDir(dir);
+        send(res, 200, { name, runDir: dir, variables });
+      } catch (error) {
+        fail(res, 500, 'variables_failed', error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    const runMatch = pathname.match(/^\/runs\/([0-9A-Za-z._-]+)$/);
+    if (runMatch && req.method === 'GET') {
+      const detail = await loadRun(runMatch[1]);
+      if (!detail) {
+        fail(res, 404, 'not_found', '运行记录不存在');
+        return;
+      }
+      send(res, 200, detail);
+      return;
+    }
+
     if (pathname === '/jobs' && req.method === 'POST') {
       await createJob(req, res);
       return;

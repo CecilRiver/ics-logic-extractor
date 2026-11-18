@@ -4,6 +4,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from './env.ts';
 import { manualExtractMiddleware } from './manual-extract.ts';
+import { manualRunsMiddleware } from './manual-runs.ts';
 import { trafficMiddleware } from './traffic.ts';
 
 loadEnv();
@@ -57,6 +58,16 @@ const server = createServer(async (req, res) => {
 
   if (pathname === '/api/manual/extract') {
     await manualExtractMiddleware(req, res, () => {
+      if (!res.writableEnded) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Not found', code: 'not_found' }));
+      }
+    });
+    return;
+  }
+
+  if (pathname === '/api/manual/runs' || pathname.startsWith('/api/manual/runs/')) {
+    await manualRunsMiddleware(req, res, () => {
       if (!res.writableEnded) {
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Not found', code: 'not_found' }));

@@ -11,19 +11,20 @@
 
 ```text
 manual-traffic-tools/
-├── server/                 # Node 服务端：DeepSeek 代理、PLC 解析任务、静态服务
+├── server/                 # Node 服务端：DeepSeek 代理、历史、PLC 解析任务、静态服务
 │   ├── env.ts              # 极简 .env 加载器
 │   ├── manual-extract.ts   # GET 健康检查 / POST 单阶段抽取
+│   ├── manual-runs.ts      # 操作规范运行历史（保存 / 列表 / 读取 / 更新）
 │   ├── traffic.ts          # 控制程序解析任务（创建 / 轮询 / 变量提取）
 │   └── index.ts            # 生产服务（dist + API + SPA 回退）
 ├── python/                 # 随项目维护的 PLC 逆向（仅标准库）
 │   ├── plc_runner.py       # JSONL 运行器：fetch / variables
 │   └── plcrev/m340/        # UMAS 上载、镜像容器、ST 源码、声明、POU、变量推断
 ├── src/
-│   ├── domain/manual.ts    # 抽取领域模型、归一化、合并与导出
-│   ├── domain/traffic.ts   # 控制程序解析结果与变量表类型
-│   ├── services/manual/    # 分段、PDF 解析、提示词、解析器、编排
-│   ├── services/traffic/   # 任务创建 / 轮询 / 变量提取客户端
+│   ├── domain/manual.ts    # 抽取领域模型、归一化、合并、导出与历史类型
+│   ├── domain/traffic.ts   # 控制程序解析结果、运行历史与质量评分类型
+│   ├── services/manual/    # 分段、PDF 解析、提示词、解析器、编排、历史
+│   ├── services/traffic/   # 任务创建 / 轮询 / 历史 / 变量提取 / 导出
 │   ├── features/
 │   │   ├── manual-extraction/   # 操作规范解析界面与结果表
 │   │   └── traffic-parsing/     # 控制程序解析界面
@@ -31,7 +32,9 @@ manual-traffic-tools/
 │   ├── router/
 │   └── App.vue             # 顶部导航与路由出口
 ├── scripts/copy-pdf-worker.mjs
-├── data/traffic/           # 运行产物（自动生成，不提交）
+├── data/
+│   ├── manual/             # 操作规范运行历史（自动生成，不提交）
+│   └── traffic/            # 控制程序运行产物（自动生成，不提交）
 └── tests/                  # 操作规范 + 控制程序解析测试
 ```
 
@@ -46,7 +49,7 @@ Copy-Item .env.example .env
 pnpm dev
 ```
 
-打开 http://localhost:5174/ 。开发模式下 Vite 直接挂载 `/api/manual/extract` 与 `/api/traffic/*` 中间件，无需另起后端进程。
+打开 http://localhost:5174/ 。开发模式下 Vite 直接挂载 `/api/manual/extract`、`/api/manual/runs` 与 `/api/traffic/*` 中间件，无需另起后端进程。
 
 - PDF 在浏览器本地解析（pdfjs），正文不会上传到第三方存储；只有分段文本发送给模型。
 - API Key 仅存在于服务端环境变量，不会进入浏览器包。
@@ -87,6 +90,29 @@ SHA-256    bf275c692ec3657d434ff7a483f476a5d5382cb030e586255ccab7951fb0017b
 
 提示词位于 `src/services/manual/prompts.ts`，服务端与前端共用同一份领域模型和解析器，避免两端字段口径漂移。
 
+## 操作规范运行历史
+
+每次操作规范解析完成后自动保存到 `data/manual/<时间戳>_<来源>/`：
+
+```text
+data/manual/<时间戳>_<来源>/
+├── meta.json    # 来源、时间、模型、分段数与各类行数
+└── state.json   # 分页文本 + 各分段抽取结果
+```
+
+- 页面「运行历史」可回看、继续导出，或基于历史结果执行「操作规范属性提取」。
+- 属性提取会更新当前记录；更换文件或调整分段口径后重新解析会新建记录，旧记录保留。
+- 刷新页面只加载历史列表，不自动载入结果。
+
+接口：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `POST` | `/api/manual/runs` | 保存一次解析 |
+| `GET` | `/api/manual/runs` | 列出历史 |
+| `GET` | `/api/manual/runs/:name` | 读取历史结果 |
+| `PUT` | `/api/manual/runs/:name` | 更新（属性提取后） |
+
 ## 控制程序解析流程
 
 1. 页面填写 PLC 地址 / 端口 / 超时。
@@ -95,6 +121,13 @@ SHA-256    bf275c692ec3657d434ff7a483f476a5d5382cb030e586255ccab7951fb0017b
 4. 页面展示每个单元的名称 / 类型 / 字符数 / 解析状态，点行展开 ST 原文；同时显示 SHA-256 供核对。
 5. 点击「关键变量属性提取」，按「源码比较 / 赋值常量 → 声明初值 → 数据类型固有范围 → 未定」的顺序推断值域，并标注依据。
 6. 没有变量声明时，类型与类别按代码用法推断并标注「推断」：布尔表达式 → BOOL，小数常量 → REAL，纯整数常量 → INT，成员访问 → 实例；只读 / 只写 / 读写分别对应输入 / 输出 / 内部。输出在本块内被再次读取时会判为内部，结果仅供参考。
+
+## 运行历史、导出与质量评分
+
+- 页面启动时列出历史运行，不自动载入结果；点击「查看」回看单元、变量与源码，历史结果不显示进度条。
+- 导出：变量表 CSV / Markdown、多 Sheet Excel（运行信息 / 程序单元 / 关键变量 / 程序源码）、分析报告 Markdown、验收证据 HTML（含 SHA-256、单元、变量与源码，可直接打印为 PDF）、结果 JSON。
+- 质量评分：值域缺失 -35、仅相关常量 -10、类型未知 -20、类别未知 -10、依据缺失 -15，推断项各 -5，按 0–100 折算高 / 中 / 低。
+- 变量表支持按关键字、类型、类别、质量等级和「是否有值域」筛选；程序单元表支持关键字搜索。
 
 落盘结构（每次运行一个目录，旧结果不覆盖）：
 
@@ -119,3 +152,6 @@ data/traffic/<时间戳>_<IP>/
 | `POST` | `/api/traffic/jobs` | 创建解析任务（`ip` / `port` / `timeout`） |
 | `GET` | `/api/traffic/jobs/:id` | 查询进度与结果 |
 | `POST` | `/api/traffic/jobs/:id/variables` | 从已解析源码提取关键变量与值域 |
+| `GET` | `/api/traffic/runs` | 列出历史运行 |
+| `GET` | `/api/traffic/runs/:name` | 读取历史运行的单元、变量与源码 |
+| `POST` | `/api/traffic/runs/:name/variables` | 对历史运行重新提取变量 |

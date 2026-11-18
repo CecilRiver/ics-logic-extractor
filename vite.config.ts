@@ -2,6 +2,7 @@ import { fileURLToPath, URL } from 'node:url';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
 import { manualExtractMiddleware } from './server/manual-extract.ts';
+import { manualRunsMiddleware } from './server/manual-runs.ts';
 import { trafficMiddleware } from './server/traffic.ts';
 
 export default defineConfig({
@@ -13,6 +14,9 @@ export default defineConfig({
         // 开发服务器内直接挂载 Node 中间件，避免再起一个后端进程或做代理。
         server.middlewares.use('/api/manual/extract', (req, res, next) => {
           void manualExtractMiddleware(req, res, next);
+        });
+        server.middlewares.use('/api/manual/runs', (req, res, next) => {
+          void manualRunsMiddleware(req, res, next);
         });
         server.middlewares.use('/api/traffic', (req, res, next) => {
           void trafficMiddleware(req, res, next);

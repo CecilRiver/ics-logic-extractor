@@ -1,4 +1,10 @@
-import type { TrafficJobInput, TrafficJobView, TrafficVariable } from '@/domain/traffic';
+import type {
+  TrafficJobInput,
+  TrafficJobView,
+  TrafficRunDetail,
+  TrafficRunSummary,
+  TrafficVariable,
+} from '@/domain/traffic';
 
 export class TrafficApiError extends Error {
   readonly code: string;
@@ -68,6 +74,27 @@ export async function fetchTrafficJob(id: string): Promise<TrafficJobView> {
 
 export async function extractTrafficVariables(id: string): Promise<TrafficVariable[]> {
   const body = await request(`/api/traffic/jobs/${encodeURIComponent(id)}/variables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  return Array.isArray(body.variables) ? (body.variables as TrafficVariable[]) : [];
+}
+
+export async function listTrafficRuns(): Promise<TrafficRunSummary[]> {
+  const body = await request('/api/traffic/runs', { method: 'GET', cache: 'no-store' });
+  return Array.isArray(body.runs) ? (body.runs as TrafficRunSummary[]) : [];
+}
+
+export async function loadTrafficRun(name: string): Promise<TrafficRunDetail> {
+  return (await request(`/api/traffic/runs/${encodeURIComponent(name)}`, {
+    method: 'GET',
+    cache: 'no-store',
+  })) as unknown as TrafficRunDetail;
+}
+
+export async function extractRunVariables(name: string): Promise<TrafficVariable[]> {
+  const body = await request(`/api/traffic/runs/${encodeURIComponent(name)}/variables`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',
