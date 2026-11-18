@@ -316,6 +316,9 @@ onUnmounted(stopPolling);
             </tbody>
           </table>
         </div>
+        <p v-if="!result.declarations" class="tp-var-note">
+          类型与类别为按代码用法推断，仅供参考；值域依据见「依据」列。
+        </p>
       </template>
     </section>
   </div>

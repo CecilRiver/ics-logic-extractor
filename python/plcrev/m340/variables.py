@@ -241,8 +241,17 @@ def _line_with(text: str, name: str, needles: list[str] | None = None) -> str:
     return fallback[:80]
 
 
-def _row(name: str, type_name: str, section: str, init: str, text: str) -> dict:
-    base = normalize_type(type_name)
+def _row(
+    name: str,
+    type_name: str,
+    section: str,
+    init: str,
+    text: str,
+    inferred: bool = False,
+) -> dict:
+    inferred_type = _infer_type(name, text) if inferred else ""
+    effective_type = type_name or inferred_type
+    base = normalize_type(effective_type)
     is_bool = base == "BOOL"
     compares, assigns, related = _constants(name, text, is_bool)
 
@@ -261,17 +270,25 @@ def _row(name: str, type_name: str, section: str, init: str, text: str) -> dict:
         sample = _line_with(text, name, related)
         value_range = "相关常量 " + "、".join(related)
         basis = f"源码相关常量：{sample}" if sample else "源码相关常量"
-    elif type_range(type_name):
-        value_range = type_range(type_name)
+    elif type_range(effective_type):
+        value_range = type_range(effective_type)
         basis = f"数据类型固有范围（{base}）"
     else:
         value_range = "未定"
         basis = "无法从源码推断"
 
+    if inferred:
+        type_label = f"{inferred_type}（推断）" if inferred_type else "未知"
+        inferred_category = _infer_category(name, text)
+        category_label = f"{inferred_category}（推断）" if inferred_category else "未知"
+    else:
+        type_label = type_name or "未知"
+        category_label = SECTION_CATEGORY.get(section, "内部")
+
     return {
         "name": name,
-        "type": type_name or "未知",
-        "category": SECTION_CATEGORY.get(section, "内部"),
+        "type": type_label,
+        "category": category_label,
         "range": value_range,
         "basis": basis,
     }
@@ -285,17 +302,129 @@ def _looks_like_call_arg(clean: str, start: int) -> bool:
     return i >= 0 and clean[i] in "(,"
 
 
+def _is_boolean_expr(expr: str) -> bool:
+    """判断表达式是否为布尔表达式（比较运算或逻辑运算）。"""
+    if re.search(r"\b(TRUE|FALSE)\b", expr, re.I):
+        return True
+    if re.search(r"\b(AND|OR|NOT)\b", expr, re.I):
+        return True
+    return bool(re.search(
+        r"<=|>=|<>|(?<![<>=:])=(?!=)|(?<![<\w])<(?![=>])|(?<![>\w])>(?!=)",
+        expr,
+    ))
+
+
+def _infer_type(name: str, text: str) -> str:
+    """从代码用法猜类型；无把握时返回空字符串。
+
+    只做高置信度推断：布尔表达式 / TRUE、FALSE / 逻辑运算符 → BOOL；
+    小数常量 → REAL；纯整数常量 → INT；带成员访问 → 实例。
+    """
+    clean = _clean(text)
+    var = re.escape(name)
+    if re.search(rf"(?<![\w.]){var}\s*\.\w", clean, re.I):
+        return "实例"
+    lines = [
+        line for line in clean.splitlines()
+        if re.search(rf"(?<![\w.]){var}\b", line, re.I)
+    ]
+    if not lines:
+        return ""
+
+    for line in lines:
+        assigned = re.search(rf"(?<![\w.]){var}\b\s*:=\s*(.+?)(?:;|$)", line)
+        if assigned and _is_boolean_expr(assigned.group(1)):
+            return "BOOL"
+        if re.search(rf"(?<![\w.]){var}\b\s*(?:=|<>)\s*(?:TRUE|FALSE)\b", line, re.I):
+            return "BOOL"
+        if re.search(rf"\b(?:AND|OR|NOT)\b\s*{var}\b|\b{var}\b\s*(?:AND|OR)\b", line, re.I):
+            return "BOOL"
+
+    for line in lines:
+        upper = line.upper()
+        if "IF" in upper and "THEN" in upper:
+            condition = line[upper.index("IF") + 2: upper.index("THEN")]
+            if (
+                re.search(rf"(?<![\w.]){var}\b", condition, re.I)
+                and not re.search(r"[<>+\-*/]|:=", condition)
+            ):
+                return "BOOL"
+
+    joined = "\n".join(lines)
+    if re.search(r"(?<![\w.])T#|TIME#", joined, re.I):
+        return "TIME"
+    if any(re.search(r"(?<![\w.])\d+\.\d*|(?<![\w.])\.\d+", line) for line in lines):
+        return "REAL"
+    if any(re.search(r"(?<![\w.])\d+(?![\w.])", line) for line in lines):
+        return "INT"
+    return ""
+
+
+def _infer_category(name: str, text: str) -> str:
+    """按读写方向猜类别：只写 → 输出，只读 → 输入，既读又写 → 内部。
+
+    当输出在本块内也被读取时，会被误判为内部，因此结果只作参考。
+    """
+    clean = _clean(text)
+    var = re.escape(name)
+    if re.search(rf"(?<![\w.]){var}\s*\.\w", clean, re.I):
+        return "内部"
+    writes = 0
+    reads = 0
+    for match in re.finditer(rf"(?<![\w.]){var}\b", clean, re.I):
+        is_write = re.match(r"\s*:=", clean[match.end():]) is not None
+        if is_write and _looks_like_call_arg(clean, match.start()):
+            continue
+        if is_write:
+            writes += 1
+        else:
+            reads += 1
+
+    if writes and reads:
+        return "内部"
+    if writes:
+        return "输出"
+    if reads:
+        return "输入"
+    return ""
+
+
 def _fallback_declarations(text: str) -> list[VarDecl]:
+    """没有声明时，从源码收集被赋值或被读取的标识符。
+
+    排除关键字、函数/功能块调用名、调用参数名、成员访问、绝对地址与
+    时间/进制字面量前缀，避免把 ``ABS(``、``%MW100``、``T#`` 当成变量。
+    """
     clean = _clean(text)
     names: list[str] = []
-    for match in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*:=", clean):
-        name = match.group(1)
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        low = name.lower()
+        if low in seen:
+            return
         if name.upper() in KEYWORDS or name.startswith(("FB_", "PRG_")):
-            continue
+            return
+        if low in ("true", "false"):
+            return
+        seen.add(low)
+        names.append(name)
+
+    for match in re.finditer(r"(?<![\w.%#])([A-Za-z_]\w*)\s*:=", clean):
         if _looks_like_call_arg(clean, match.start()):
             continue
-        if name not in names:
-            names.append(name)
+        add(match.group(1))
+
+    for match in re.finditer(r"(?<![\w.%#])([A-Za-z_]\w*)", clean):
+        rest = clean[match.end():]
+        if rest.startswith("#"):
+            continue
+        if re.match(r"\s*\(", rest):
+            continue
+        if re.match(r"\s*:=", rest) and _looks_like_call_arg(clean, match.start()):
+            continue
+        add(match.group(1))
+
     return [VarDecl(name, "", "") for name in names]
 
 
@@ -304,8 +433,10 @@ def extract(units: list[Unit]) -> list[dict]:
     rows: list[dict] = []
     for unit in units:
         declarations = unit.declarations or parse_declarations(unit.text)
+        inferred = False
         if not declarations:
             declarations = _fallback_declarations(unit.text)
+            inferred = True
             section = ""
         else:
             section = None  # 用每个声明自己的 section
@@ -315,7 +446,14 @@ def extract(units: list[Unit]) -> list[dict]:
             if key in seen:
                 continue
             seen.add(key)
-            row = _row(decl.name, decl.type, decl.section if section is None else section, decl.init, unit.text)
+            row = _row(
+                decl.name,
+                decl.type,
+                decl.section if section is None else section,
+                decl.init,
+                unit.text,
+                inferred=inferred,
+            )
             row["unit"] = unit.name
             rows.append(row)
     return rows

@@ -85,6 +85,46 @@ suite('traffic variable extraction', () => {
     expect(saved).toContain('变量表.json');
   });
 
+  it('infers type and category from code when declarations are absent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traffic-infer-'));
+    cleanup.push(dir);
+    mkdirSync(join(dir, '02_逆向'), { recursive: true });
+    const body = [
+      'Alarm := Deviation > 43.0;',
+      'Deviation := ABS(Ts - 0.1);',
+      'Err0 := 0.0;',
+      'Counter := 0;',
+      'ResetController := NOT InitDone;',
+      '',
+    ].join('\n');
+    writeFileSync(join(dir, '02_逆向', 'st_01_0x00001.st'), body, 'utf8');
+
+    const result = run(['variables', '--run-dir', dir]);
+    expect(result.status).toBe(0);
+
+    const output = result.events.find((event) => event.type === 'result');
+    const rows = output?.variables as Record<string, string>[];
+    const byName = new Map(rows.map((row) => [row.name, row]));
+
+    expect(byName.get('Alarm')).toMatchObject({
+      type: 'BOOL（推断）', category: '输出（推断）', range: '0 / 1',
+    });
+    expect(byName.get('Deviation')).toMatchObject({
+      type: 'REAL（推断）', category: '内部（推断）', range: '比较常量 43.0',
+    });
+    expect(byName.get('Err0')).toMatchObject({
+      type: 'REAL（推断）', category: '输出（推断）', range: '赋值常量 0.0',
+    });
+    expect(byName.get('Counter')).toMatchObject({
+      type: 'INT（推断）', category: '输出（推断）', range: '赋值常量 0',
+    });
+    expect(byName.get('ResetController')).toMatchObject({
+      type: 'BOOL（推断）', category: '输出（推断）', range: '0 / 1',
+    });
+    expect(byName.get('Ts')).toMatchObject({ type: 'REAL（推断）', category: '输入（推断）' });
+    expect(byName.get('InitDone')).toMatchObject({ type: 'BOOL（推断）', category: '输入（推断）' });
+  });
+
   it('fails cleanly when the PLC is unreachable and leaves no run directory', () => {
     const root = mkdtempSync(join(tmpdir(), 'traffic-fetch-'));
     cleanup.push(root);

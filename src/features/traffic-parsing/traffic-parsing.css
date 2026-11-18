@@ -160,6 +160,12 @@
   font-weight: 600;
 }
 
+.tp-var-note {
+  margin: 8px 0 0;
+  color: var(--mp-muted);
+  font-size: 11px;
+}
+
 .mp-tag.ok {
   color: #2f6b4b;
   background: #edf7f1;
