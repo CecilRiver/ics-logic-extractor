@@ -787,6 +787,12 @@
   clip: rect(0 0 0 0);
 }
 
+.mp-upload-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 9px;
+}
+
 .mp-file-input:focus-visible ~ .mp-dropzone-wrap .mp-dropzone {
   outline: 3px solid rgba(47, 95, 149, .2);
   outline-offset: 2px;

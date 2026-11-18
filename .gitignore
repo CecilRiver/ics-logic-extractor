@@ -3,6 +3,11 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# PLC 解析产物与 Python 缓存（每次运行一个目录，结果不覆盖）
+data/
+__pycache__/
+*.pyc
+
 .env
 .env.*
 !.env.example

@@ -148,6 +148,7 @@ async function loadPdf(source: File) {
       pageCount: result.pages.length,
     };
     readState.value = 'ready';
+    notice.value = '文档已就绪，点击「开始解析」生成业务逻辑。';
   } catch (error) {
     pages.value = [];
     readState.value = 'error';
@@ -190,6 +191,7 @@ async function loadFile(next: File) {
     pages.value = parts;
     fileMeta.value = { name: next.name, size: next.size, kind: 'text', pageCount: 1 };
     readState.value = 'ready';
+    notice.value = '文档已就绪，点击「开始解析」生成业务逻辑。';
     if (!parts.length) warnings.value = ['文件中没有可抽取的文本。'];
   } catch (error) {
     readState.value = 'error';
@@ -202,6 +204,10 @@ function onFileChange(event: Event) {
   const next = input.files?.[0];
   if (next) void loadFile(next);
   input.value = '';
+}
+
+function openFilePicker() {
+  fileInput.value?.click();
 }
 
 function onDrop(event: DragEvent) {
@@ -558,6 +564,11 @@ function rawLength(stage: ManualStage): number {
               <b>拖入文件，或点击选择</b>
               <span>支持 PDF / TXT / Markdown，单个文件不超过 30 MB</span>
             </label>
+          </div>
+          <div class="mp-upload-actions">
+            <button class="mp-btn" type="button" :disabled="running" @click="openFilePicker">
+              <Upload :size="14" />上传文件
+            </button>
           </div>
 
           <div v-if="readState === 'reading'" class="mp-inline-state">

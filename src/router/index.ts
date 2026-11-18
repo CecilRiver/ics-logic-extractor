@@ -14,7 +14,7 @@ const routes: RouteRecordRaw[] = [
     path: '/traffic',
     name: 'traffic',
     component: TrafficParsingView,
-    meta: { title: '流量解析' },
+    meta: { title: '控制程序解析' },
   },
   { path: '/:pathMatch(.*)*', redirect: '/manual' },
 ];
