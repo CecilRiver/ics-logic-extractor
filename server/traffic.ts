@@ -690,6 +690,20 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
   return { name, result, variables: await readRunVariables(dir) };
 }
 
+async function deleteRun(res: ServerResponse, name: string): Promise<void> {
+  const dir = runDirFor(name);
+  if (!dir || !(await readManifest(dir))) {
+    fail(res, 404, 'not_found', '运行记录不存在');
+    return;
+  }
+  try {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    send(res, 200, { name, deleted: true });
+  } catch (error) {
+    fail(res, 500, 'delete_failed', `删除运行记录失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function trafficMiddleware(
   req: IncomingMessage,
   res: ServerResponse,
@@ -770,6 +784,11 @@ export async function trafficMiddleware(
         return;
       }
       send(res, 200, detail);
+      return;
+    }
+
+    if (runMatch && req.method === 'DELETE') {
+      await deleteRun(res, runMatch[1]);
       return;
     }
 

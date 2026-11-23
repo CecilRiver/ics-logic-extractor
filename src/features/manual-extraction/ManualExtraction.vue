@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -35,6 +35,7 @@ import {
 import { fetchHealth } from '@/services/manual/client';
 import { buildSegments } from '@/services/manual/chunk';
 import {
+  deleteManualRun,
   listManualRuns,
   loadManualRun,
   saveManualRun,
@@ -109,6 +110,8 @@ const historyOpen = ref(false);
 const historyLoading = ref(false);
 const historyOpening = ref(false);
 const historyError = ref('');
+const deleteTarget = ref('');
+const deleting = ref(false);
 
 let abortController: AbortController | null = null;
 let healthController: AbortController | null = null;
@@ -191,6 +194,30 @@ async function refreshHistory() {
     historyLoading.value = false;
   }
 }
+
+async function removeHistory(name: string) {
+  if (deleting.value || running.value || historyOpening.value) return;
+  const wasCurrent = historyName.value === name;
+  deleting.value = true;
+  historyError.value = '';
+  try {
+    await deleteManualRun(name);
+    deleteTarget.value = '';
+    if (wasCurrent) {
+      historyName.value = '';
+      notice.value = '已删除历史记录，当前结果仍保留，可重新保存';
+    }
+    await refreshHistory();
+  } catch (error) {
+    historyError.value = errorMessage(error);
+  } finally {
+    deleting.value = false;
+  }
+}
+
+watch(historyOpen, (open) => {
+  if (!open) deleteTarget.value = '';
+});
 
 function historyPayload(): ManualRunPayload | null {
   if (!fileMeta.value || !pages.value.length) return null;
@@ -1035,7 +1062,7 @@ function rawLength(stage: ManualStage): number {
             <button
               class="mp-btn"
               type="button"
-              :disabled="historyLoading || historyOpening"
+              :disabled="historyLoading || historyOpening || deleting"
               @click="refreshHistory"
             >
               <RotateCcw :size="13" />{{ historyLoading ? '刷新中…' : '刷新' }}
@@ -1070,14 +1097,43 @@ function rawLength(stage: ManualStage): number {
                   <template v-if="item.model"> · {{ item.model }}</template>
                 </small>
               </div>
-              <button
-                class="mp-btn"
-                type="button"
-                :disabled="running || historyOpening"
-                @click="openHistory(item.name)"
-              >
-                {{ historyName === item.name ? '当前' : '查看' }}
-              </button>
+              <div class="mp-run-actions">
+                <button
+                  class="mp-btn"
+                  type="button"
+                  :disabled="running || historyOpening || deleting"
+                  @click="openHistory(item.name)"
+                >
+                  {{ historyName === item.name ? '当前' : '查看' }}
+                </button>
+                <template v-if="deleteTarget === item.name">
+                  <button
+                    class="mp-btn danger"
+                    type="button"
+                    :disabled="deleting"
+                    @click="removeHistory(item.name)"
+                  >
+                    {{ deleting ? '删除中…' : '确认删除' }}
+                  </button>
+                  <button
+                    class="mp-btn ghost"
+                    type="button"
+                    :disabled="deleting"
+                    @click="deleteTarget = ''"
+                  >
+                    取消
+                  </button>
+                </template>
+                <button
+                  v-else
+                  class="mp-btn danger"
+                  type="button"
+                  :disabled="running || historyOpening || deleting"
+                  @click="deleteTarget = item.name"
+                >
+                  删除
+                </button>
+              </div>
             </li>
           </ul>
         </div>

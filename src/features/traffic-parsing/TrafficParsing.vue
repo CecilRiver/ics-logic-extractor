@@ -27,6 +27,7 @@ import {
 } from '@/domain/traffic';
 import {
   collectTraffic,
+  deleteTrafficRun,
   extractRunVariables,
   fetchTrafficJob,
   listTrafficRuns,
@@ -78,6 +79,8 @@ const expanded = ref<number[]>([]);
 const runs = ref<TrafficRunSummary[]>([]);
 const runsLoading = ref(false);
 const runsError = ref('');
+const deleteTarget = ref('');
+const deleting = ref(false);
 const historyOpen = ref(false);
 const unitSearch = ref('');
 const varSearch = ref('');
@@ -230,6 +233,10 @@ watch(filteredVariables, (list) => {
   if (varPage.value > max) varPage.value = max;
 });
 
+watch(historyOpen, (open) => {
+  if (!open) deleteTarget.value = '';
+});
+
 function prevVarPage() {
   if (varPage.value > 1) varPage.value -= 1;
 }
@@ -350,6 +357,36 @@ async function refreshRuns() {
     runsError.value = errorText(error);
   } finally {
     runsLoading.value = false;
+  }
+}
+
+function clearCurrentRun() {
+  stopPolling();
+  job.value = null;
+  variables.value = null;
+  variablesError.value = '';
+  parseError.value = '';
+  expanded.value = [];
+  expandedFrames.value = [];
+  deleteTarget.value = '';
+  resetFilters();
+  resetTrafficView();
+}
+
+async function removeRun(name: string) {
+  if (deleting.value || isRunning.value || parsing.value) return;
+  const wasCurrent = currentRunName.value === name;
+  deleting.value = true;
+  runsError.value = '';
+  try {
+    await deleteTrafficRun(name);
+    deleteTarget.value = '';
+    if (wasCurrent) clearCurrentRun();
+    await refreshRuns();
+  } catch (error) {
+    runsError.value = errorText(error);
+  } finally {
+    deleting.value = false;
   }
 }
 
@@ -1025,7 +1062,7 @@ onUnmounted(stopPolling);
           <span class="mp-muted">{{ runs.length }} 次</span>
         </div>
         <div class="mp-history-drawer-actions">
-          <button class="mp-btn" type="button" :disabled="runsLoading" @click="refreshRuns">
+          <button class="mp-btn" type="button" :disabled="runsLoading || deleting" @click="refreshRuns">
             <RotateCcw :size="13" />{{ runsLoading ? '刷新中…' : '刷新' }}
           </button>
           <button class="mp-history-drawer-close" type="button" aria-label="收起运行历史" @click="historyOpen = false">
@@ -1053,14 +1090,43 @@ onUnmounted(stopPolling);
               {{ run.hasVariables ? ` · ${run.variableCount} 个变量` : '' }}
             </small>
           </div>
-          <button
-            class="mp-btn"
-            type="button"
-            :disabled="isRunning || starting || parsing"
-            @click="openRun(run.name)"
-          >
-            {{ currentRunName === run.name ? '当前' : '查看' }}
-          </button>
+          <div class="mp-run-actions">
+            <button
+              class="mp-btn"
+              type="button"
+              :disabled="isRunning || starting || parsing || deleting"
+              @click="openRun(run.name)"
+            >
+              {{ currentRunName === run.name ? '当前' : '查看' }}
+            </button>
+            <template v-if="deleteTarget === run.name">
+              <button
+                class="mp-btn danger"
+                type="button"
+                :disabled="deleting"
+                @click="removeRun(run.name)"
+              >
+                {{ deleting ? '删除中…' : '确认删除' }}
+              </button>
+              <button
+                class="mp-btn ghost"
+                type="button"
+                :disabled="deleting"
+                @click="deleteTarget = ''"
+              >
+                取消
+              </button>
+            </template>
+            <button
+              v-else
+              class="mp-btn danger"
+              type="button"
+              :disabled="isRunning || starting || parsing || deleting"
+              @click="deleteTarget = run.name"
+            >
+              删除
+            </button>
+          </div>
         </li>
       </ul>
       </div>

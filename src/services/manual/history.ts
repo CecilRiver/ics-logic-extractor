@@ -71,3 +71,7 @@ export async function loadManualRun(name: string): Promise<ManualRunDetail> {
     cache: 'no-store',
   })) as unknown as ManualRunDetail;
 }
+
+export async function deleteManualRun(name: string): Promise<void> {
+  await request(`/api/manual/runs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}

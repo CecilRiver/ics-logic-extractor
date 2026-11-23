@@ -118,6 +118,10 @@ export async function loadTrafficRun(name: string): Promise<TrafficRunDetail> {
   })) as unknown as TrafficRunDetail;
 }
 
+export async function deleteTrafficRun(name: string): Promise<void> {
+  await request(`/api/traffic/runs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
 export async function extractRunVariables(name: string): Promise<TrafficVariable[]> {
   const body = await request(`/api/traffic/runs/${encodeURIComponent(name)}/variables`, {
     method: 'POST',

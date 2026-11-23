@@ -313,6 +313,20 @@ async function updateRun(res: ServerResponse, name: string, body: JsonObject): P
   send(res, 200, { name, updatedAt: meta.updatedAt });
 }
 
+async function deleteRun(res: ServerResponse, name: string): Promise<void> {
+  const dir = runDirFor(name);
+  if (!dir || !(await readMeta(dir))) {
+    fail(res, 404, 'not_found', '运行记录不存在');
+    return;
+  }
+  try {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    send(res, 200, { name, deleted: true });
+  } catch (error) {
+    fail(res, 500, 'delete_failed', `删除运行记录失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function manualRunsMiddleware(
   req: IncomingMessage,
   res: ServerResponse,
@@ -370,6 +384,11 @@ export async function manualRunsMiddleware(
         return;
       }
       await updateRun(res, match[1], body);
+      return;
+    }
+
+    if (match && req.method === 'DELETE') {
+      await deleteRun(res, match[1]);
       return;
     }
 
