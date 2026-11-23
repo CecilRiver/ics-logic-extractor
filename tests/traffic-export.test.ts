@@ -40,10 +40,11 @@ const variables: TrafficVariable[] = [
   {
     unit: 'FB_FuelController',
     name: 'Deviation',
-    type: 'REAL（推断）',
-    category: '内部（推断）',
+    type: 'REAL',
+    category: '内部',
     range: '比较常量 43.0',
     basis: '源码比较常量：Deviation > 43.0;',
+    inferred: true,
   },
   {
     unit: 'FB_FuelController',

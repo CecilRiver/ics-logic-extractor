@@ -103,26 +103,26 @@ suite('traffic variable extraction', () => {
     expect(result.status).toBe(0);
 
     const output = result.events.find((event) => event.type === 'result');
-    const rows = output?.variables as Record<string, string>[];
+    const rows = output?.variables as Record<string, unknown>[];
     const byName = new Map(rows.map((row) => [row.name, row]));
 
     expect(byName.get('Alarm')).toMatchObject({
-      type: 'BOOL（推断）', category: '输出（推断）', range: '0 / 1',
+      type: 'BOOL', category: '输出', range: '0 / 1', inferred: true,
     });
     expect(byName.get('Deviation')).toMatchObject({
-      type: 'REAL（推断）', category: '内部（推断）', range: '比较常量 43.0',
+      type: 'REAL', category: '内部', range: '比较常量 43.0', inferred: true,
     });
     expect(byName.get('Err0')).toMatchObject({
-      type: 'REAL（推断）', category: '输出（推断）', range: '赋值常量 0.0',
+      type: 'REAL', category: '输出', range: '赋值常量 0.0', inferred: true,
     });
     expect(byName.get('Counter')).toMatchObject({
-      type: 'INT（推断）', category: '输出（推断）', range: '赋值常量 0',
+      type: 'INT', category: '输出', range: '赋值常量 0', inferred: true,
     });
     expect(byName.get('ResetController')).toMatchObject({
-      type: 'BOOL（推断）', category: '输出（推断）', range: '0 / 1',
+      type: 'BOOL', category: '输出', range: '0 / 1', inferred: true,
     });
-    expect(byName.get('Ts')).toMatchObject({ type: 'REAL（推断）', category: '输入（推断）' });
-    expect(byName.get('InitDone')).toMatchObject({ type: 'BOOL（推断）', category: '输入（推断）' });
+    expect(byName.get('Ts')).toMatchObject({ type: 'REAL', category: '输入', inferred: true });
+    expect(byName.get('InitDone')).toMatchObject({ type: 'BOOL', category: '输入', inferred: true });
   });
 
   it('fails cleanly when the PLC is unreachable and leaves no run directory', () => {

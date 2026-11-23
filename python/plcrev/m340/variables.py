@@ -278,9 +278,9 @@ def _row(
         basis = "无法从源码推断"
 
     if inferred:
-        type_label = f"{inferred_type}（推断）" if inferred_type else "未知"
+        type_label = inferred_type if inferred_type else "未知"
         inferred_category = _infer_category(name, text)
-        category_label = f"{inferred_category}（推断）" if inferred_category else "未知"
+        category_label = inferred_category if inferred_category else "未知"
     else:
         type_label = type_name or "未知"
         category_label = SECTION_CATEGORY.get(section, "内部")
@@ -291,6 +291,7 @@ def _row(
         "category": category_label,
         "range": value_range,
         "basis": basis,
+        "inferred": inferred,
     }
 
 
