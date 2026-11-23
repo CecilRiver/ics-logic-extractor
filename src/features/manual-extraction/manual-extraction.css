@@ -457,6 +457,8 @@
   border-color: #315f93;
 }
 
+.mp-btn.primary svg { color: #fff; }
+
 .mp-btn.primary:hover:not(:disabled) { background: #2a5483; border-color: #2a5483; }
 
 .mp-btn.danger { color: #9a453d; background: #fdf3f1; border-color: #eed3cf; }

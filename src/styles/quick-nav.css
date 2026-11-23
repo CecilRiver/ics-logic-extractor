@@ -32,12 +32,8 @@
 }
 
 @media (min-width: 901px) {
-  .tp-wrap {
+  .mp-main.mp-with-quick-nav {
     padding-right: 92px;
-  }
-
-  .mp-has-quick-nav {
-    padding-right: 120px;
   }
 }
 

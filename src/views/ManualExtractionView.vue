@@ -25,20 +25,3 @@ const FLOW = [
 
   <ManualExtraction />
 </template>
-
-<style scoped>
-.mp-view-heading h1 {
-  margin: 3px 0 5px;
-  font-size: clamp(24px, 3vw, 30px);
-  font-weight: 600;
-  letter-spacing: -.015em;
-  line-height: 1.25;
-}
-
-.mp-view-heading p {
-  max-width: 760px;
-  margin: 0;
-  color: var(--mp-muted);
-  font-size: 13px;
-}
-</style>

@@ -19,7 +19,7 @@ import { FileText, Network, ShieldCheck } from 'lucide-vue-next';
       </nav>
     </header>
 
-    <main class="mp-main">
+    <main class="mp-main mp-with-quick-nav">
       <!-- 缓存路由页面：切到控制程序解析再回来时，操作规范的分段与抽取结果不会丢失。 -->
       <RouterView v-slot="{ Component }">
         <KeepAlive>

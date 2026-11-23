@@ -105,6 +105,8 @@ const unitsSection = ref<HTMLElement | null>(null);
 const topSection = ref<HTMLElement | null>(null);
 const trafficCollapsed = ref(false);
 const unitsCollapsed = ref(false);
+const networkCollapsed = ref(false);
+const progressCollapsed = ref(false);
 
 let pollTimer: number | null = null;
 
@@ -318,7 +320,16 @@ async function scrollToSection(target: HTMLElement | null) {
 }
 
 function goTop() {
+  networkCollapsed.value = false;
   void scrollToSection(topSection.value);
+}
+
+function toggleNetwork() {
+  networkCollapsed.value = !networkCollapsed.value;
+}
+
+function toggleProgress() {
+  progressCollapsed.value = !progressCollapsed.value;
 }
 
 function goTraffic() {
@@ -416,6 +427,8 @@ async function openRun(name: string) {
     };
     trafficCollapsed.value = false;
     unitsCollapsed.value = false;
+    networkCollapsed.value = false;
+    progressCollapsed.value = false;
     const loaded = detail.result.plcs ?? [];
     const loadedPlcs = loaded.length
       ? [...loaded]
@@ -478,6 +491,8 @@ async function collect() {
   job.value = null;
   trafficCollapsed.value = false;
   unitsCollapsed.value = false;
+  networkCollapsed.value = false;
+  progressCollapsed.value = false;
   resetFilters();
   resetTrafficView();
 
@@ -533,6 +548,7 @@ async function parse() {
     expanded.value = [];
     resetFilters();
     unitsCollapsed.value = false;
+    progressCollapsed.value = false;
     void scrollToSection(unitsSection.value);
 
     try {
@@ -611,11 +627,17 @@ onUnmounted(stopPolling);
   <div class="tp-wrap">
     <div ref="topSection" class="mp-grid tp-top">
       <section class="mp-card">
-        <div class="mp-card-head">
+        <div class="mp-card-head" @click="toggleNetwork">
           <div><Upload :size="16" /><h2>PLC 网络参数</h2></div>
-          <span class="mp-muted">M340 / M251 · TCP 502</span>
+          <div class="mp-card-head-actions">
+            <span class="mp-muted">M340 / M251 · TCP 502</span>
+            <button class="mp-btn" type="button" @click.stop="toggleNetwork">
+              {{ networkCollapsed ? '展开' : '收起' }}
+            </button>
+          </div>
         </div>
 
+        <div v-show="!networkCollapsed">
         <form class="tp-form" @submit.prevent="collect">
           <div class="tp-plc-list">
             <label v-for="(_, index) in plcAddresses" :key="index" class="tp-field">
@@ -668,33 +690,40 @@ onUnmounted(stopPolling);
         <p class="tp-note">
           先收集上载、运行与 IO 流量并保存 PCAPNG，再在流量区点击「开始解析」离线解析控制程序。
         </p>
+        </div>
       </section>
 
       <section class="mp-card">
-        <div class="mp-card-head">
+        <div class="mp-card-head" @click="toggleProgress">
           <div><Activity :size="16" /><h2>采集进度</h2></div>
-          <span
-            v-if="job"
-            class="mp-chip"
-            :class="job.status === 'error' ? 'bad' : isRunning || parsing ? 'warn' : 'ok'"
-          >
-            <XCircle v-if="job.status === 'error'" :size="13" />
-            <LoaderCircle v-else-if="isRunning || parsing" :size="13" class="mp-spin" />
-            <CheckCircle2 v-else :size="13" />
-            {{
-              job.status === 'error'
-                ? '采集失败'
-                : isRunning
-                  ? '采集中'
-                  : parsing
-                    ? '解析中'
-                    : parsed
-                      ? '解析成功'
-                      : '采集完成'
-            }}
-          </span>
+          <div class="mp-card-head-actions">
+            <span
+              v-if="job"
+              class="mp-chip"
+              :class="job.status === 'error' ? 'bad' : isRunning || parsing ? 'warn' : 'ok'"
+            >
+              <XCircle v-if="job.status === 'error'" :size="13" />
+              <LoaderCircle v-else-if="isRunning || parsing" :size="13" class="mp-spin" />
+              <CheckCircle2 v-else :size="13" />
+              {{
+                job.status === 'error'
+                  ? '采集失败'
+                  : isRunning
+                    ? '采集中'
+                    : parsing
+                      ? '解析中'
+                      : parsed
+                        ? '解析成功'
+                        : '采集完成'
+              }}
+            </span>
+            <button class="mp-btn" type="button" @click.stop="toggleProgress">
+              {{ progressCollapsed ? '展开' : '收起' }}
+            </button>
+          </div>
         </div>
 
+        <div v-show="!progressCollapsed">
         <div v-if="!job" class="mp-placeholder compact">
           <FileText :size="22" />
           <b>还没有采集任务</b>
@@ -747,6 +776,7 @@ onUnmounted(stopPolling);
           <CheckCircle2 :size="14" />
           已完成流量采集：{{ trafficStats.frames }} 帧 / {{ formatBytes(trafficStats.bytes) }}，在下方流量区点击「开始解析」。
         </div>
+        </div>
       </section>
     </div>
 
@@ -760,7 +790,7 @@ onUnmounted(stopPolling);
           </span>
           <button class="mp-btn primary" type="button" :disabled="!canParse" @click="parse">
             <LoaderCircle v-if="parsing" :size="15" class="mp-spin" />
-            <Play v-else :size="15" />{{ parsing ? '解析中…' : parsed ? '重新解析' : '开始解析' }}
+            <Play v-else :size="15" fill="currentColor" />{{ parsing ? '解析中…' : parsed ? '重新解析' : '开始解析' }}
           </button>
           <a v-if="downloadUrl" class="mp-btn" :href="downloadUrl" download>下载 PCAPNG</a>
           <button class="mp-btn" type="button" @click="trafficCollapsed = !trafficCollapsed">
@@ -1080,7 +1110,11 @@ onUnmounted(stopPolling);
           <span>完成一次流量采集或离线解析后，历史记录会出现在这里。</span>
         </div>
         <ul v-else class="mp-run-list">
-        <li v-for="run in runs" :key="run.name" :class="{ active: currentRunName === run.name }">
+        <li
+          v-for="run in runs"
+          :key="run.name"
+          :class="{ active: currentRunName === run.name, confirming: deleteTarget === run.name }"
+        >
           <div class="mp-run-main">
             <b>{{ run.time || run.name }}</b>
             <small>
@@ -1092,6 +1126,7 @@ onUnmounted(stopPolling);
           </div>
           <div class="mp-run-actions">
             <button
+              v-if="deleteTarget !== run.name"
               class="mp-btn"
               type="button"
               :disabled="isRunning || starting || parsing || deleting"
@@ -1109,7 +1144,7 @@ onUnmounted(stopPolling);
                 {{ deleting ? '删除中…' : '确认删除' }}
               </button>
               <button
-                class="mp-btn ghost"
+                class="mp-btn"
                 type="button"
                 :disabled="deleting"
                 @click="deleteTarget = ''"

@@ -710,7 +710,7 @@ function rawLength(stage: ManualStage): number {
 
 <template>
   <div class="mp-app mp-embedded">
-    <main class="mp-main mp-has-quick-nav">
+    <main class="mp-main">
       <div class="mp-embedded-status">
         <span
           class="mp-chip"
@@ -738,7 +738,7 @@ function rawLength(stage: ManualStage): number {
             <div><Upload :size="16" /><h2>上传操作规范</h2></div>
             <div class="mp-card-head-actions">
               <button v-if="fileMeta" class="mp-text-btn" :disabled="running" @click="reset">更换文件</button>
-              <button class="mp-text-btn" type="button" @click="uploadCollapsed = !uploadCollapsed">
+              <button class="mp-btn" type="button" @click="uploadCollapsed = !uploadCollapsed">
                 {{ uploadCollapsed ? '展开' : '收起' }}
               </button>
             </div>
@@ -862,7 +862,7 @@ function rawLength(stage: ManualStage): number {
             <div><Sparkles :size="16" /><h2>分段抽取</h2></div>
             <div class="mp-card-head-actions">
               <span class="mp-muted">{{ segments.length ? `${segments.length} 个分段` : '等待文档' }}</span>
-              <button class="mp-text-btn" type="button" @click="extractCollapsed = !extractCollapsed">
+              <button class="mp-btn" type="button" @click="extractCollapsed = !extractCollapsed">
                 {{ extractCollapsed ? '展开' : '收起' }}
               </button>
             </div>
@@ -1087,7 +1087,11 @@ function rawLength(stage: ManualStage): number {
             <span>完成一次操作规范解析后，历史记录会出现在这里。</span>
           </div>
           <ul v-else class="mp-run-list">
-            <li v-for="item in historyRuns" :key="item.name" :class="{ active: historyName === item.name }">
+            <li
+              v-for="item in historyRuns"
+              :key="item.name"
+              :class="{ active: historyName === item.name, confirming: deleteTarget === item.name }"
+            >
               <div class="mp-run-main">
                 <b>{{ item.source || item.name }}</b>
                 <small>
@@ -1099,6 +1103,7 @@ function rawLength(stage: ManualStage): number {
               </div>
               <div class="mp-run-actions">
                 <button
+                  v-if="deleteTarget !== item.name"
                   class="mp-btn"
                   type="button"
                   :disabled="running || historyOpening || deleting"
@@ -1116,7 +1121,7 @@ function rawLength(stage: ManualStage): number {
                     {{ deleting ? '删除中…' : '确认删除' }}
                   </button>
                   <button
-                    class="mp-btn ghost"
+                    class="mp-btn"
                     type="button"
                     :disabled="deleting"
                     @click="deleteTarget = ''"

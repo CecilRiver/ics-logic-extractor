@@ -59,6 +59,15 @@
   flex-shrink: 0;
 }
 
+.mp-run-list li.confirming {
+  flex-wrap: wrap;
+}
+
+.mp-run-list li.confirming .mp-run-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .mp-run-sha {
   color: #52657a;
   font-size: 11px;
