@@ -1,6 +1,6 @@
-# PLC 逆向（M340 子集）
+# PLC 逆向
 
-从 `plc_reverse` 项目迁入的只读 M340 实现，供 Web 服务端调用。在原有上载/逆向之外，新增了 Modbus 只读采集、PCAPNG 生成与离线解析。Python 标准库即可运行。
+从 `plc_reverse` 项目迁入的只读实现，供 Web 服务端调用。在原有上载/逆向之外，新增了 Modbus 只读采集、PCAPNG 生成与离线解析。Python 标准库即可运行。
 
 | 文件 | 作用 |
 |---|---|
@@ -15,13 +15,15 @@
 | `plcrev/m340/pathbase.py` | 从 `.stu` 的 PathBase.db 取变量声明 |
 | `plcrev/m340/pou.py` | 声明 + 代码体拼成完整 POU |
 | `plcrev/m340/variables.py` | 关键变量与值域推断 |
+| `reference/m251/` | 两台 M251 的主程序源码 |
 
 手工运行：
 
 ```powershell
 # 1. 采集上载 + 运行 + IO 流量（只读），保存应用镜像与 PCAPNG
 python python/plc_runner.py collect --ip 192.168.20.55 --port 502 --timeout 10 `
-  --out-root data/traffic --duration 10 --interval 0.5
+  --out-root data/traffic --duration 10 --interval 0.5 `
+  --plc-list 192.168.20.55,192.168.20.123,192.168.20.21
 
 # 2. 离线解析已采集的应用镜像（不再连接 PLC）
 python python/plc_runner.py parse --run-dir data/traffic/<时间戳>_192.168.20.55
