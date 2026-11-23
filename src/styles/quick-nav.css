@@ -1,0 +1,48 @@
+.mp-quick-nav {
+  position: fixed;
+  right: 14px;
+  top: 50%;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+  background: rgba(255, 255, 255, .94);
+  border: 1px solid var(--mp-line);
+  border-radius: 12px;
+  box-shadow: 0 10px 26px -22px rgba(30, 50, 80, .7);
+  backdrop-filter: blur(8px);
+  transform: translateY(-50%);
+}
+
+.mp-quick-nav button {
+  width: 58px;
+  padding: 7px 0;
+  color: #5c6c80;
+  font-size: 11.5px;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.mp-quick-nav button:hover {
+  color: var(--mp-blue);
+  background: var(--mp-blue-soft);
+}
+
+@media (min-width: 901px) {
+  .tp-wrap {
+    padding-right: 92px;
+  }
+
+  .mp-has-quick-nav {
+    padding-right: 120px;
+  }
+}
+
+@media (max-width: 900px) {
+  .mp-quick-nav {
+    display: none;
+  }
+}

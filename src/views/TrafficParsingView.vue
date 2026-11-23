@@ -3,8 +3,8 @@ import TrafficParsing from '@/features/traffic-parsing/TrafficParsing.vue';
 
 const FLOW = [
   ['01', '配置网络'],
-  ['02', '提取程序'],
-  ['03', '逆向源码'],
+  ['02', '收集流量'],
+  ['03', '离线解析'],
   ['04', '变量属性'],
 ] as const;
 </script>
@@ -15,8 +15,8 @@ const FLOW = [
       <div class="mp-eyebrow">CONTROL PROGRAM / TRAFFIC</div>
       <h1>控制程序解析</h1>
       <p>
-        配置被测 PLC 网络参数，自动完成控制程序提取，页面展示提取到的控制程序及解析成功标识，
-        并进一步提取关键变量与值域范围。
+        先采集被测 PLC 的上载、运行与 IO 流量并保存 PCAPNG，再离线解析控制程序，
+        提取关键变量与值域范围。两步分开执行，采集结果可回看、下载。
       </p>
     </div>
     <ol class="mp-flow" aria-label="解析流程">

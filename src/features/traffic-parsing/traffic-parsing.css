@@ -8,7 +8,7 @@
 
 .tp-form {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 12px;
   margin: 8px 0 10px;
 }
@@ -131,16 +131,6 @@
   border-radius: 9px;
 }
 
-.tp-var-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #eef2f7;
-}
-
 .tp-var-head {
   margin-top: 16px;
 }
@@ -165,6 +155,194 @@
   color: var(--mp-muted);
   font-size: 11px;
 }
+
+.tp-note {
+  margin: 6px 0 0;
+  color: var(--mp-muted);
+  font-size: 11.5px;
+}
+
+.tp-traffic-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tp-current-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: #52657a;
+  font-size: 11.5px;
+}
+
+.tp-current-run code {
+  padding: 1px 6px;
+  color: var(--mp-blue);
+  font-size: 11px;
+  background: var(--mp-blue-soft);
+  border-radius: 5px;
+}
+
+.tp-traffic-head-actions,
+.tp-unit-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.tp-traffic,
+.tp-results {
+  scroll-margin-top: 78px;
+}
+
+.tp-traffic-stats > div {
+  min-width: 0;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e6edf5;
+  border-radius: 9px;
+}
+
+.tp-traffic-stats span {
+  display: block;
+  color: var(--mp-muted);
+  font-size: 10.5px;
+}
+
+.tp-traffic-stats b {
+  font-size: 13px;
+}
+
+.tp-traffic-bar {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  background: #eef2f7;
+  border-radius: 999px;
+}
+
+.tp-traffic-bar span.upload { background: #4f7fb5; }
+.tp-traffic-bar span.runtime { background: #4f8a68; }
+.tp-traffic-bar span.io { background: #b2874a; }
+
+.tp-traffic-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 7px 0 12px;
+  color: #5c6c80;
+  font-size: 11.5px;
+}
+
+.tp-traffic-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 2px;
+}
+
+.tp-traffic-legend i.upload { background: #4f7fb5; }
+.tp-traffic-legend i.runtime { background: #4f8a68; }
+.tp-traffic-legend i.io { background: #b2874a; }
+
+.tp-traffic-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tp-traffic-toolbar input[type="text"],
+.tp-traffic-toolbar select {
+  height: 32px;
+  padding: 0 9px;
+  color: var(--mp-ink);
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+}
+
+.tp-traffic-toolbar input[type="text"] {
+  flex: 1;
+  min-width: 190px;
+}
+
+.tp-tabs {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+}
+
+.tp-tabs button {
+  padding: 0 11px;
+  height: 30px;
+  color: #5c6c80;
+  font-size: 11.5px;
+  background: #fff;
+  border: 0;
+  border-left: 1px solid var(--mp-line);
+  cursor: pointer;
+}
+
+.tp-tabs button:first-child {
+  border-left: 0;
+}
+
+.tp-tabs button.active {
+  color: var(--mp-blue);
+  font-weight: 600;
+  background: var(--mp-blue-soft);
+}
+
+.tp-frame-wrap,
+.tp-point-wrap {
+  max-height: 380px;
+  overflow: auto;
+}
+
+.tp-frame-table {
+  min-width: 900px;
+}
+
+.tp-point-table {
+  min-width: 440px;
+}
+
+.tp-frame-row {
+  cursor: pointer;
+}
+
+.tp-frame-row:hover td {
+  background: #fafcff;
+}
+
+.tp-points-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0 8px;
+  padding-top: 14px;
+  border-top: 1px solid #eef2f7;
+}
+
+.tp-points-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mp-tag.upload { color: #2f5f95; background: #eef4fb; border-color: #d8e6f5; }
+.mp-tag.runtime { color: #35704f; background: #eef7f1; border-color: #d6eadf; }
+.mp-tag.io { color: #886128; background: #fdf7ea; border-color: #efe2c6; }
 
 .tp-export-actions {
   display: flex;
@@ -231,6 +409,20 @@
   font-size: 12px;
 }
 
+.tp-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.tp-pagination .mp-btn {
+  height: 30px;
+  padding: 0 10px;
+}
+
 .tp-q,
 .tp-score {
   padding: 2px 8px;
@@ -274,7 +466,13 @@
   }
 
   .tp-var-toolbar input[type="text"],
-  .tp-var-toolbar select {
+  .tp-var-toolbar select,
+  .tp-traffic-toolbar input[type="text"],
+  .tp-traffic-toolbar select {
     flex: 1 1 100%;
+  }
+
+  .tp-traffic-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

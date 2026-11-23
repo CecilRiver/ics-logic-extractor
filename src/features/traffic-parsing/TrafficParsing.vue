@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Activity,
   AlertTriangle,
@@ -11,22 +11,28 @@ import {
   Play,
   RotateCcw,
   Upload,
+  X,
   XCircle,
 } from 'lucide-vue-next';
 import {
   summarizeQuality,
   variableQuality,
+  type TrafficCategory,
   type TrafficJobView,
+  type TrafficResult,
   type TrafficRunSummary,
+  type TrafficStats,
+  type TrafficUnit,
   type TrafficVariable,
 } from '@/domain/traffic';
 import {
+  collectTraffic,
   extractRunVariables,
-  extractTrafficVariables,
   fetchTrafficJob,
   listTrafficRuns,
   loadTrafficRun,
-  startTrafficJob,
+  parseTrafficRun,
+  trafficDownloadUrl,
 } from '@/services/traffic/client';
 import {
   exportEvidenceHtml,
@@ -38,13 +44,16 @@ import {
 } from '@/services/traffic/export';
 import '@/features/manual-extraction/manual-extraction.css';
 import '@/styles/history.css';
+import '@/styles/quick-nav.css';
 import './traffic-parsing.css';
 
 const STAGE_TEXT: Record<string, string> = {
   connect: '连接 PLC',
-  upload: '提取控制程序',
-  reverse: '解析控制程序',
-  done: '解析完成',
+  upload: '读取控制程序',
+  live: '采集运行 / IO 流量',
+  pack: '生成流量文件',
+  parse: '离线解析',
+  done: '完成',
 };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -52,35 +61,78 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 const ipInput = ref('');
 const portInput = ref(502);
 const timeoutInput = ref(10);
+const durationInput = ref(10);
 
 const job = ref<TrafficJobView | null>(null);
 const starting = ref(false);
 const errorMessage = ref('');
 const variables = ref<TrafficVariable[] | null>(null);
-const variablesRunning = ref(false);
 const variablesError = ref('');
 const expanded = ref<number[]>([]);
 
 const runs = ref<TrafficRunSummary[]>([]);
 const runsLoading = ref(false);
 const runsError = ref('');
-const viewingRun = ref('');
+const historyOpen = ref(false);
 const unitSearch = ref('');
 const varSearch = ref('');
 const varTypeFilter = ref('all');
 const varCategoryFilter = ref('all');
 const varQualityFilter = ref('all');
 const varHasRange = ref(false);
+const varPage = ref(1);
+const varPageSize = ref(20);
+
+const parsing = ref(false);
+const parseError = ref('');
+const trafficCategory = ref<'all' | TrafficCategory>('all');
+const trafficDirection = ref<'all' | 'request' | 'response'>('all');
+const trafficSearch = ref('');
+const expandedFrames = ref<number[]>([]);
+const pointCategory = ref<'all' | 'runtime' | 'io'>('all');
+const pointNonZero = ref(true);
+const pointSearch = ref('');
+const trafficSection = ref<HTMLElement | null>(null);
+const unitsSection = ref<HTMLElement | null>(null);
+const topSection = ref<HTMLElement | null>(null);
+const trafficCollapsed = ref(false);
+const unitsCollapsed = ref(false);
 
 let pollTimer: number | null = null;
 
 const result = computed(() => job.value?.result);
-const units = computed(() => result.value?.units ?? []);
+const units = computed<TrafficUnit[]>(() => result.value?.units ?? []);
 const isRunning = computed(() => job.value?.status === 'running');
-const canStart = computed(() => !starting.value && !isRunning.value);
-const finished = computed(() => job.value?.status === 'done');
+const parsed = computed(() => Boolean(result.value?.parsed) || units.value.length > 0);
+const traffic = computed(() => result.value?.traffic ?? null);
+const frames = computed(() => (traffic.value?.frames ?? []).filter((frame) => frame.category !== 'upload'));
+const trafficStats = computed<TrafficStats>(() => {
+  const collection = traffic.value;
+  const visible = frames.value;
+  const statsFor = (category: 'runtime' | 'io') => {
+    const items = visible.filter((frame) => frame.category === category);
+    return { frames: items.length, bytes: items.reduce((sum, frame) => sum + frame.bytes, 0) };
+  };
+  return {
+    frames: visible.length,
+    bytes: visible.reduce((sum, frame) => sum + frame.bytes, 0),
+    upload: collection?.stats?.upload ?? { frames: 0, bytes: 0 },
+    runtime: statsFor('runtime'),
+    io: statsFor('io'),
+    samples: collection?.stats?.samples ?? 0,
+    duration_ms: collection?.stats?.duration_ms ?? 0,
+    client_ip: collection?.stats?.client_ip ?? '',
+    ranges: collection?.stats?.ranges ?? [],
+  };
+});
+const currentRunName = computed(() => result.value?.runDir.split(/[\\/]/).pop() ?? '');
+const downloadUrl = computed(() => (currentRunName.value ? trafficDownloadUrl(currentRunName.value) : ''));
+const canCollect = computed(() => !starting.value && !isRunning.value && !parsing.value);
+const canParse = computed(() =>
+  Boolean(result.value) && Boolean(currentRunName.value)
+  && !parsing.value && !isRunning.value && !starting.value,
+);
 const variablesEmpty = computed(() => variables.value !== null && variables.value.length === 0);
-const variablesBusy = computed(() => variablesRunning.value || Boolean(job.value?.variablesRunning));
 
 const allVariables = computed(() => variables.value ?? []);
 const hasVariables = computed(() => allVariables.value.length > 0);
@@ -88,11 +140,23 @@ const decoratedVariables = computed(() =>
   allVariables.value.map((row) => ({ row, quality: variableQuality(row) })),
 );
 const quality = computed(() => summarizeQuality(allVariables.value));
-const currentRunName = computed(() => result.value?.runDir.split(/[\\/]/).pop() ?? '');
-const isHistorical = computed(() => Boolean(job.value?.id.startsWith('run:')));
 
 function baseTypeLabel(value: string): string {
   return (value || '').replace('（推断）', '').trim();
+}
+
+function normalizeVariables(rows: TrafficVariable[]): TrafficVariable[] {
+  return rows.map((row) => {
+    const inferred = Boolean(row.inferred)
+      || row.type.includes('（推断）')
+      || row.category.includes('（推断）');
+    return {
+      ...row,
+      type: row.type.replace('（推断）', ''),
+      category: row.category.replace('（推断）', ''),
+      inferred,
+    };
+  });
 }
 
 const filteredUnits = computed(() => {
@@ -118,6 +182,122 @@ const filteredVariables = computed(() => {
   });
 });
 
+const varPageCount = computed(() =>
+  Math.max(1, Math.ceil(filteredVariables.value.length / varPageSize.value)),
+);
+
+const pagedVariables = computed(() => {
+  const page = Math.min(Math.max(1, varPage.value), varPageCount.value);
+  const start = (page - 1) * varPageSize.value;
+  return filteredVariables.value.slice(start, start + varPageSize.value);
+});
+
+watch(
+  [varSearch, varTypeFilter, varCategoryFilter, varQualityFilter, varHasRange, varPageSize],
+  () => {
+    varPage.value = 1;
+  },
+);
+
+watch(filteredVariables, (list) => {
+  const max = Math.max(1, Math.ceil(list.length / varPageSize.value));
+  if (varPage.value > max) varPage.value = max;
+});
+
+function prevVarPage() {
+  if (varPage.value > 1) varPage.value -= 1;
+}
+
+function nextVarPage() {
+  if (varPage.value < varPageCount.value) varPage.value += 1;
+}
+
+const trafficTabs: Array<{ id: 'all' | TrafficCategory; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'runtime', label: '运行' },
+  { id: 'io', label: 'IO' },
+];
+
+function categoryLabel(category: TrafficCategory): string {
+  return category === 'upload' ? '上载' : category === 'runtime' ? '运行' : 'IO';
+}
+
+const filteredFrames = computed(() => {
+  const keyword = trafficSearch.value.trim().toLowerCase();
+  return frames.value.filter((frame) => {
+    if (trafficCategory.value !== 'all' && frame.category !== trafficCategory.value) return false;
+    if (trafficDirection.value !== 'all' && frame.direction !== trafficDirection.value) return false;
+    if (!keyword) return true;
+    return [frame.function, frame.summary, frame.protocol, frame.time]
+      .join(' ')
+      .toLowerCase()
+      .includes(keyword);
+  });
+});
+
+const distribution = computed(() => {
+  const stats = trafficStats.value;
+  if (!stats) return [];
+  const total = stats.bytes || 1;
+  return [
+    { id: 'runtime' as const, label: '运行', ...stats.runtime, percent: (stats.runtime.bytes / total) * 100 },
+    { id: 'io' as const, label: 'IO', ...stats.io, percent: (stats.io.bytes / total) * 100 },
+  ];
+});
+const points = computed(() => traffic.value?.points ?? []);
+const nonZeroPointCount = computed(() => points.value.filter((point) => point.value !== 0).length);
+
+const filteredPoints = computed(() => {
+  const keyword = pointSearch.value.trim().toLowerCase();
+  return points.value.filter((point) => {
+    if (pointCategory.value !== 'all' && point.category !== pointCategory.value) return false;
+    if (pointNonZero.value && point.value === 0) return false;
+    if (!keyword) return true;
+    return point.address.toLowerCase().includes(keyword);
+  });
+});
+
+function toggleFrame(index: number) {
+  const at = expandedFrames.value.indexOf(index);
+  if (at >= 0) expandedFrames.value.splice(at, 1);
+  else expandedFrames.value.push(index);
+}
+
+function resetTrafficView() {
+  trafficCategory.value = 'all';
+  trafficDirection.value = 'all';
+  trafficSearch.value = '';
+  expandedFrames.value = [];
+  pointCategory.value = 'all';
+  pointNonZero.value = true;
+  pointSearch.value = '';
+}
+
+function runLabel(name: string): string {
+  const match = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})_?(.*)$/);
+  if (!match) return name || '—';
+  return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]} · ${match[7]}`;
+}
+
+async function scrollToSection(target: HTMLElement | null) {
+  await nextTick();
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function goTop() {
+  void scrollToSection(topSection.value);
+}
+
+function goTraffic() {
+  trafficCollapsed.value = false;
+  void scrollToSection(trafficSection.value);
+}
+
+function goUnits() {
+  unitsCollapsed.value = false;
+  void scrollToSection(unitsSection.value);
+}
+
 function stopPolling() {
   if (pollTimer !== null) {
     window.clearTimeout(pollTimer);
@@ -132,6 +312,7 @@ function resetFilters() {
   varCategoryFilter.value = 'all';
   varQualityFilter.value = 'all';
   varHasRange.value = false;
+  varPage.value = 1;
 }
 
 async function refreshRuns() {
@@ -147,17 +328,18 @@ async function refreshRuns() {
 }
 
 async function openRun(name: string) {
-  if (isRunning.value || starting.value) return;
+  if (isRunning.value || starting.value || parsing.value) return;
   stopPolling();
   starting.value = true;
   errorMessage.value = '';
+  parseError.value = '';
   variablesError.value = '';
   try {
     const detail = await loadTrafficRun(name);
-    viewingRun.value = name;
-    variables.value = detail.variables;
+    variables.value = detail.variables ? normalizeVariables(detail.variables) : null;
     expanded.value = [];
     resetFilters();
+    resetTrafficView();
     job.value = {
       id: `run:${name}`,
       status: 'done',
@@ -169,6 +351,14 @@ async function openRun(name: string) {
       result: detail.result,
       variables: detail.variables ?? undefined,
     };
+    trafficCollapsed.value = false;
+    unitsCollapsed.value = false;
+    if (detail.result.traffic && !detail.result.parsed) {
+      void scrollToSection(trafficSection.value);
+    } else if (detail.result.parsed) {
+      void scrollToSection(unitsSection.value);
+    }
+    historyOpen.value = false;
   } catch (error) {
     errorMessage.value = errorText(error);
   } finally {
@@ -186,7 +376,10 @@ async function poll(id: string) {
       pollTimer = window.setTimeout(() => void poll(id), 600);
     } else {
       pollTimer = null;
-      if (view.status === 'done') void refreshRuns();
+      if (view.status === 'done') {
+        void refreshRuns();
+        if (!view.result?.parsed) void scrollToSection(trafficSection.value);
+      }
     }
   } catch (error) {
     pollTimer = null;
@@ -194,8 +387,8 @@ async function poll(id: string) {
   }
 }
 
-async function start() {
-  if (!canStart.value) return;
+async function collect() {
+  if (!canCollect.value) return;
   const ip = ipInput.value.trim();
   if (!ip) {
     errorMessage.value = '请填写被测 PLC 的 IP 地址';
@@ -205,18 +398,23 @@ async function start() {
   stopPolling();
   starting.value = true;
   errorMessage.value = '';
+  parseError.value = '';
   variablesError.value = '';
   variables.value = null;
   expanded.value = [];
+  expandedFrames.value = [];
   job.value = null;
-  viewingRun.value = '';
+  trafficCollapsed.value = false;
+  unitsCollapsed.value = false;
   resetFilters();
+  resetTrafficView();
 
   try {
-    const { id } = await startTrafficJob({
+    const { id } = await collectTraffic({
       ip,
       port: Math.min(65535, Math.max(1, Math.round(Number(portInput.value) || 502))),
       timeout: Math.min(60, Math.max(1, Number(timeoutInput.value) || 10)),
+      duration: Math.min(60, Math.max(1, Math.round(Number(durationInput.value) || 10))),
     });
     job.value = {
       id,
@@ -235,20 +433,52 @@ async function start() {
   }
 }
 
-async function runVariables() {
-  if (!job.value || job.value.status !== 'done' || variablesBusy.value) return;
-  variablesRunning.value = true;
+async function parse() {
+  if (!canParse.value || !result.value || !currentRunName.value) return;
+  parsing.value = true;
+  parseError.value = '';
   variablesError.value = '';
+  variables.value = null;
   try {
-    variables.value = viewingRun.value
-      ? await extractRunVariables(viewingRun.value)
-      : await extractTrafficVariables(job.value.id);
+    const parsedResult = await parseTrafficRun(currentRunName.value);
+    const parsedFields = parsedResult as unknown as Partial<TrafficResult>;
+    const parsedUnits = Array.isArray(parsedFields.units) ? parsedFields.units : [];
+    job.value = {
+      ...job.value!,
+      status: 'done',
+      stage: 'done',
+      percent: 100,
+      message: `离线解析完成：${parsedUnits.length} 个单元`,
+      result: {
+        ...result.value,
+        ...parsedFields,
+        units: parsedUnits,
+        parsed: true,
+        traffic: result.value.traffic,
+      },
+    };
+    expanded.value = [];
     resetFilters();
-    void refreshRuns();
+    unitsCollapsed.value = false;
+    void scrollToSection(unitsSection.value);
+
+    try {
+      variables.value = normalizeVariables(await extractRunVariables(currentRunName.value));
+      resetFilters();
+      if (variables.value) {
+        job.value = {
+          ...job.value,
+          message: `解析完成：${parsedUnits.length} 个单元 / ${variables.value.length} 个变量`,
+        };
+      }
+    } catch (error) {
+      variablesError.value = `关键变量提取失败：${errorText(error)}；可点击「重新解析」重试。`;
+    }
+    await refreshRuns();
   } catch (error) {
-    variablesError.value = errorText(error);
+    parseError.value = errorText(error);
   } finally {
-    variablesRunning.value = false;
+    parsing.value = false;
   }
 }
 
@@ -306,14 +536,14 @@ onUnmounted(stopPolling);
 
 <template>
   <div class="tp-wrap">
-    <div class="mp-grid tp-top">
+    <div ref="topSection" class="mp-grid tp-top">
       <section class="mp-card">
         <div class="mp-card-head">
           <div><Upload :size="16" /><h2>PLC 网络参数</h2></div>
           <span class="mp-muted">M340 · TCP 502</span>
         </div>
 
-        <form class="tp-form" @submit.prevent="start">
+        <form class="tp-form" @submit.prevent="collect">
           <label class="tp-field">
             <span>PLC 地址</span>
             <input v-model="ipInput" type="text" placeholder="192.168.20.55" autocomplete="off" />
@@ -326,39 +556,56 @@ onUnmounted(stopPolling);
             <span>超时（秒）</span>
             <input v-model.number="timeoutInput" type="number" min="1" max="60" />
           </label>
+          <label class="tp-field">
+            <span>采集时长（秒）</span>
+            <input v-model.number="durationInput" type="number" min="1" max="60" />
+          </label>
         </form>
 
         <div class="tp-actions">
-          <button class="mp-btn primary" type="button" :disabled="!canStart" @click="start">
+          <button class="mp-btn primary" type="button" :disabled="!canCollect" @click="collect">
             <LoaderCircle v-if="isRunning || starting" :size="15" class="mp-spin" />
-            <Play v-else :size="15" />开始解析
+            <Activity v-else :size="15" />{{ isRunning ? '采集中…' : '收集流量' }}
           </button>
         </div>
+        <p class="tp-note">
+          先收集上载、运行与 IO 流量并保存 PCAPNG，再在流量区点击「开始解析」离线解析控制程序。
+        </p>
       </section>
 
       <section class="mp-card">
         <div class="mp-card-head">
-          <div><Activity :size="16" /><h2>{{ isHistorical ? '历史结果' : '解析进度' }}</h2></div>
+          <div><Activity :size="16" /><h2>采集进度</h2></div>
           <span
             v-if="job"
             class="mp-chip"
-            :class="job.status === 'done' ? 'ok' : job.status === 'error' ? 'bad' : 'warn'"
+            :class="job.status === 'error' ? 'bad' : isRunning || parsing ? 'warn' : 'ok'"
           >
-            <CheckCircle2 v-if="job.status === 'done'" :size="13" />
-            <XCircle v-else-if="job.status === 'error'" :size="13" />
-            <LoaderCircle v-else :size="13" class="mp-spin" />
-            {{ job.status === 'done' ? '解析成功' : job.status === 'error' ? '解析失败' : '解析中' }}
+            <XCircle v-if="job.status === 'error'" :size="13" />
+            <LoaderCircle v-else-if="isRunning || parsing" :size="13" class="mp-spin" />
+            <CheckCircle2 v-else :size="13" />
+            {{
+              job.status === 'error'
+                ? '采集失败'
+                : isRunning
+                  ? '采集中'
+                  : parsing
+                    ? '解析中'
+                    : parsed
+                      ? '解析成功'
+                      : '采集完成'
+            }}
           </span>
         </div>
 
         <div v-if="!job" class="mp-placeholder compact">
           <FileText :size="22" />
-          <b>还没有解析任务</b>
-          <span>填写 PLC 地址后点击「开始解析」，自动完成控制程序提取；也可以从下方运行历史载入已有结果。</span>
+          <b>还没有采集任务</b>
+          <span>填写 PLC 地址后点击「收集流量」；也可以从下方运行历史载入已有结果。</span>
         </div>
 
         <template v-else>
-          <div v-if="!isHistorical" class="mp-progress">
+          <div v-if="isRunning" class="mp-progress">
             <div class="mp-progress-head">
               <span>{{ stageText }}</span>
               <b class="mono">{{ Math.round(progressPercent) }}%</b>
@@ -366,12 +613,16 @@ onUnmounted(stopPolling);
             <div class="mp-bar"><i :style="{ width: `${progressPercent}%` }" /></div>
           </div>
           <div v-if="job.message" class="tp-progress-message">{{ job.message }}</div>
+          <div v-if="parsing" class="tp-progress-message">正在解析控制程序并提取关键变量…</div>
 
           <div v-for="warning in job.warnings" :key="warning" class="mp-hint">
             <AlertTriangle :size="14" />{{ warning }}
           </div>
           <div v-if="job.error" class="mp-hint bad">
             <XCircle :size="14" />{{ job.error }}
+          </div>
+          <div v-if="parseError" class="mp-hint bad">
+            <XCircle :size="14" />解析失败：{{ parseError }}
           </div>
         </template>
 
@@ -383,62 +634,174 @@ onUnmounted(stopPolling);
           <div><span>工程大小</span><b class="mono">{{ formatBytes(result.imageBytes) }}</b></div>
           <div><span>记录数</span><b class="mono">{{ result.records }}</b></div>
           <div><span>会话号</span><b class="mono">{{ result.session }}</b></div>
-          <div><span>程序单元</span><b class="mono">{{ result.units.length }}</b></div>
+          <div><span>程序单元</span><b class="mono">{{ parsed ? units.length : '—' }}</b></div>
           <div class="wide"><span>SHA-256</span><code>{{ result.sha256 }}</code></div>
           <div class="wide"><span>运行目录</span><code class="tp-path">{{ result.runDir }}</code></div>
         </div>
-        <div v-if="result" class="mp-inline-state">
+        <div v-if="result" class="tp-current-run">
+          <span>当前运行</span>
+          <code>{{ runLabel(currentRunName) }}</code>
+          <span class="mp-muted">SHA {{ result.sha256 ? `${result.sha256.slice(0, 12)}…` : '—' }}</span>
+        </div>
+        <div v-if="result && parsed" class="mp-inline-state">
           <CheckCircle2 :size="14" />已完成控制程序提取：{{ result.records }} 条记录 / {{ formatBytes(result.imageBytes) }}
+        </div>
+        <div v-else-if="traffic" class="mp-inline-state">
+          <CheckCircle2 :size="14" />
+          已完成流量采集：{{ trafficStats.frames }} 帧 / {{ formatBytes(trafficStats.bytes) }}，在下方流量区点击「开始解析」。
         </div>
       </section>
     </div>
 
-    <section class="mp-card mp-history">
+    <section v-if="traffic" ref="trafficSection" class="mp-card tp-traffic">
       <div class="mp-card-head">
-        <div><History :size="16" /><h2>运行历史</h2></div>
-        <div class="mp-history-actions">
-          <span class="mp-muted">{{ runs.length }} 次运行</span>
-          <button class="mp-btn" type="button" :disabled="runsLoading" @click="refreshRuns">
-            <RotateCcw :size="13" />{{ runsLoading ? '刷新中…' : '刷新' }}
+        <div><Activity :size="16" /><h2>运行 / IO 流量</h2></div>
+        <div class="tp-traffic-head-actions">
+          <span class="tp-current-run">当前运行 <code>{{ runLabel(currentRunName) }}</code></span>
+          <button class="mp-btn primary" type="button" :disabled="!canParse" @click="parse">
+            <LoaderCircle v-if="parsing" :size="15" class="mp-spin" />
+            <Play v-else :size="15" />{{ parsing ? '解析中…' : parsed ? '重新解析' : '开始解析' }}
+          </button>
+          <a v-if="downloadUrl" class="mp-btn" :href="downloadUrl" download>下载 PCAPNG</a>
+          <button class="mp-btn" type="button" @click="trafficCollapsed = !trafficCollapsed">
+            {{ trafficCollapsed ? '展开' : '收起' }}
           </button>
         </div>
       </div>
-      <div v-if="runsError" class="mp-hint bad">
-        <XCircle :size="14" />{{ runsError }}
+
+      <div v-show="!trafficCollapsed">
+      <div class="tp-traffic-stats">
+        <div><span>总帧数</span><b class="mono">{{ trafficStats.frames }}</b></div>
+        <div><span>总字节</span><b class="mono">{{ formatBytes(trafficStats.bytes) }}</b></div>
+        <div><span>运行流量</span><b class="mono">{{ trafficStats.runtime.frames }} 帧</b></div>
+        <div><span>IO 流量</span><b class="mono">{{ trafficStats.io.frames }} 帧</b></div>
+        <div><span>采样轮次</span><b class="mono">{{ trafficStats.samples }}</b></div>
+        <div><span>采集耗时</span><b class="mono">{{ trafficStats.duration_ms }} ms</b></div>
       </div>
-      <div v-else-if="!runs.length" class="mp-placeholder compact">
-        <History :size="22" />
-        <b>暂无历史运行</b>
-        <span>完成一次控制程序解析后，历史记录会出现在这里。</span>
+
+      <div class="tp-traffic-bar">
+        <span
+          v-for="item in distribution"
+          :key="item.id"
+          :class="item.id"
+          :style="{ width: `${item.percent}%` }"
+          :title="`${item.label} ${item.frames} 帧`"
+        />
       </div>
-      <ul v-else class="mp-run-list">
-        <li v-for="run in runs" :key="run.name" :class="{ active: currentRunName === run.name }">
-          <div class="mp-run-main">
-            <b>{{ run.time || run.name }}</b>
-            <small>
-              {{ run.plc || '未知 PLC' }} · {{ run.unitCount }} 个单元 ·
-              {{ run.hasVariables ? `${run.variableCount} 个变量` : '未提取变量' }}
-            </small>
-          </div>
-          <code class="mp-run-sha">{{ run.sha256 ? `${run.sha256.slice(0, 12)}…` : '—' }}</code>
+      <div class="tp-traffic-legend">
+        <span v-for="item in distribution" :key="item.id">
+          <i :class="item.id" />{{ item.label }} {{ item.frames }} 帧 / {{ formatBytes(item.bytes) }}
+        </span>
+      </div>
+
+      <div class="tp-traffic-toolbar">
+        <div class="tp-tabs" role="tablist" aria-label="流量类别">
           <button
-            class="mp-btn"
+            v-for="item in trafficTabs"
+            :key="item.id"
             type="button"
-            :disabled="isRunning || starting"
-            @click="openRun(run.name)"
+            role="tab"
+            :aria-selected="trafficCategory === item.id"
+            :class="{ active: trafficCategory === item.id }"
+            @click="trafficCategory = item.id"
           >
-            {{ currentRunName === run.name ? '当前' : '查看' }}
+            {{ item.label }}
           </button>
-        </li>
-      </ul>
+        </div>
+        <select v-model="trafficDirection" aria-label="方向筛选">
+          <option value="all">全部方向</option>
+          <option value="request">请求</option>
+          <option value="response">响应</option>
+        </select>
+        <input v-model="trafficSearch" type="text" placeholder="搜索功能 / 摘要 / 协议…" />
+        <span class="mp-muted">显示 {{ filteredFrames.length }} / {{ frames.length }}</span>
+      </div>
+
+      <div class="mp-table-wrap tp-frame-wrap">
+        <table class="mp-table tp-frame-table">
+          <thead>
+            <tr><th>序号</th><th>时间</th><th>方向</th><th>类别</th><th>功能</th><th>摘要</th><th>长度</th></tr>
+          </thead>
+          <tbody>
+            <template v-for="frame in filteredFrames" :key="frame.index">
+              <tr class="tp-frame-row" @click="toggleFrame(frame.index)">
+                <td class="mono">{{ frame.index }}</td>
+                <td class="mono">{{ frame.time }}</td>
+                <td>{{ frame.direction === 'request' ? '请求' : '响应' }}</td>
+                <td><span class="mp-tag" :class="frame.category">{{ categoryLabel(frame.category) }}</span></td>
+                <td class="mono">{{ frame.function }}</td>
+                <td class="mp-evidence">{{ frame.summary }}</td>
+                <td class="mono">{{ frame.bytes }}</td>
+              </tr>
+              <tr v-if="expandedFrames.includes(frame.index)">
+                <td colspan="7" class="tp-source-cell">
+                  <pre class="tp-source">{{ frame.hex }}</pre>
+                </td>
+              </tr>
+            </template>
+            <tr v-if="!filteredFrames.length">
+              <td colspan="7" class="mp-empty">没有符合筛选条件的流量帧</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tp-points-head">
+        <h3>采集点位</h3>
+        <span class="mp-muted">{{ points.length }} 个点位 · 非零 {{ nonZeroPointCount }} 个</span>
+      </div>
+      <div class="tp-traffic-toolbar">
+        <select v-model="pointCategory" aria-label="点位类别">
+          <option value="all">全部点位</option>
+          <option value="runtime">运行点位</option>
+          <option value="io">IO 点位</option>
+        </select>
+        <label class="tp-check"><input v-model="pointNonZero" type="checkbox" />只看非零</label>
+        <input v-model="pointSearch" type="text" placeholder="搜索点位地址…" />
+        <span class="mp-muted">显示 {{ filteredPoints.length }} / {{ points.length }}</span>
+      </div>
+      <div v-if="filteredPoints.length" class="mp-table-wrap tp-point-wrap">
+        <table class="mp-table tp-point-table">
+          <thead>
+            <tr><th>类别</th><th>区域</th><th>地址</th><th>值</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="point in filteredPoints" :key="`${point.category}-${point.address}`">
+              <td><span class="mp-tag" :class="point.category">{{ categoryLabel(point.category) }}</span></td>
+              <td>{{ point.area }}</td>
+              <td class="mono">{{ point.address }}</td>
+              <td class="mono">{{ point.value }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="mp-placeholder compact">
+        <FileText :size="22" />
+        <b>没有符合筛选条件的点位</b>
+        <span>{{ nonZeroPointCount === 0 ? '本次采集点位均为 0，可取消「只看非零」查看全部。' : '调整筛选条件后再看。' }}</span>
+      </div>
+
+      <p class="tp-var-note">
+        流量文件：<code>{{ traffic.file }}</code>（PCAPNG 另含程序上载会话，用于离线解析）。
+        扫描范围：%MW0–1023、%IW0–127、线圈 0–255、离散输入 0–255；地址映射为推测，仅作展示。
+        PCAPNG 由采集端请求/响应重建，含合成 TCP 握手与 ACK，便于 Wireshark 查看。
+      </p>
+      </div>
     </section>
 
-    <section v-if="result" class="mp-card tp-results">
+    <section v-if="result && parsed" ref="unitsSection" class="mp-card tp-results">
       <div class="mp-card-head">
         <div><FileText :size="16" /><h2>控制程序</h2></div>
-        <span class="mp-chip ok"><CheckCircle2 :size="13" />解析成功 · {{ result.units.length }} 个单元</span>
+        <div class="tp-unit-head-actions">
+          <span class="tp-current-run">本次解析 <code>{{ runLabel(currentRunName) }}</code></span>
+          <span class="mp-chip ok"><CheckCircle2 :size="13" />解析成功 · {{ units.length }} 个单元</span>
+          <button class="mp-btn" type="button" @click="unitsCollapsed = !unitsCollapsed">
+            {{ unitsCollapsed ? '展开' : '收起' }}
+          </button>
+        </div>
       </div>
 
+      <div v-show="!unitsCollapsed">
       <div class="tp-export-actions">
         <span class="tp-export-label">导出</span>
         <button class="mp-btn" type="button" @click="exportXlsx"><Download :size="13" />Excel</button>
@@ -483,18 +846,6 @@ onUnmounted(stopPolling);
         </table>
       </div>
 
-      <div class="tp-var-actions">
-        <button
-          class="mp-btn primary"
-          type="button"
-          :disabled="variablesBusy || !finished"
-          @click="runVariables"
-        >
-          <LoaderCircle v-if="variablesBusy" :size="15" class="mp-spin" />
-          <Activity v-else :size="15" />关键变量属性提取
-        </button>
-      </div>
-
       <div v-if="variablesError" class="mp-hint bad">
         <XCircle :size="14" />{{ variablesError }}
       </div>
@@ -533,8 +884,13 @@ onUnmounted(stopPolling);
               <option value="中">中</option>
               <option value="低">低</option>
             </select>
+            <select v-model.number="varPageSize" aria-label="每页数量">
+              <option :value="20">20 条/页</option>
+              <option :value="50">50 条/页</option>
+              <option :value="100">100 条/页</option>
+            </select>
             <label class="tp-check"><input v-model="varHasRange" type="checkbox" />仅看有值域</label>
-            <span class="mp-muted">显示 {{ filteredVariables.length }} / {{ allVariables.length }}</span>
+            <span class="mp-muted">筛选 {{ filteredVariables.length }} / 共 {{ allVariables.length }}</span>
           </div>
 
           <div class="tp-quality">
@@ -550,34 +906,117 @@ onUnmounted(stopPolling);
             <b>没有符合筛选条件的变量</b>
             <span>调整搜索或筛选条件后再看。</span>
           </div>
-          <div v-else class="mp-table-wrap">
-            <table class="mp-table tp-var-table">
-              <thead>
-                <tr>
-                  <th>所属单元</th><th>变量名</th><th>类型</th><th>类别</th>
-                  <th>值域范围 / 相关常量</th><th>依据</th><th>质量</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in filteredVariables" :key="`${item.row.unit}-${item.row.name}-${item.row.category}`">
-                  <td class="tp-var-unit">{{ item.row.unit }}</td>
-                  <td><b>{{ item.row.name }}</b></td>
-                  <td>{{ item.row.type || '未知' }}</td>
-                  <td><span class="mp-tag type">{{ item.row.category }}</span></td>
-                  <td class="tp-var-range">{{ item.row.range }}</td>
-                  <td class="mp-evidence">{{ item.row.basis }}</td>
-                  <td>
-                    <span class="tp-score" :class="item.quality.level">{{ item.quality.score }} · {{ item.quality.level }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <template v-else>
+            <div class="mp-table-wrap">
+              <table class="mp-table tp-var-table">
+                <thead>
+                  <tr>
+                    <th>所属单元</th><th>变量名</th><th>类型</th><th>类别</th>
+                    <th>值域范围 / 相关常量</th><th>依据</th><th>质量</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in pagedVariables" :key="`${item.row.unit}-${item.row.name}-${item.row.category}`">
+                    <td class="tp-var-unit">{{ item.row.unit }}</td>
+                    <td><b>{{ item.row.name }}</b></td>
+                    <td>{{ item.row.type || '未知' }}</td>
+                    <td><span class="mp-tag type">{{ item.row.category }}</span></td>
+                    <td class="tp-var-range">{{ item.row.range }}</td>
+                    <td class="mp-evidence">{{ item.row.basis }}</td>
+                    <td>
+                      <span class="tp-score" :class="item.quality.level">{{ item.quality.score }} · {{ item.quality.level }}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tp-pagination">
+              <span class="mp-muted">
+                共 {{ filteredVariables.length }} 条 · 第 {{ Math.min(varPage, varPageCount) }} / {{ varPageCount }} 页
+              </span>
+              <button class="mp-btn" type="button" :disabled="varPage <= 1" @click="prevVarPage">
+                上一页
+              </button>
+              <button class="mp-btn" type="button" :disabled="varPage >= varPageCount" @click="nextVarPage">
+                下一页
+              </button>
+            </div>
+          </template>
         </template>
         <p v-if="!result.declarations" class="tp-var-note">
           类型与类别为按代码用法推断，仅供参考；值域依据见「依据」列。
         </p>
       </template>
+      </div>
     </section>
+
+    <aside class="mp-history-drawer" :class="{ open: historyOpen }">
+      <div class="mp-history-drawer-head">
+        <div class="mp-history-drawer-title">
+          <History :size="16" />
+          <h2>运行历史</h2>
+          <span class="mp-muted">{{ runs.length }} 次</span>
+        </div>
+        <div class="mp-history-drawer-actions">
+          <button class="mp-btn" type="button" :disabled="runsLoading" @click="refreshRuns">
+            <RotateCcw :size="13" />{{ runsLoading ? '刷新中…' : '刷新' }}
+          </button>
+          <button class="mp-history-drawer-close" type="button" aria-label="收起运行历史" @click="historyOpen = false">
+            <X :size="16" />
+          </button>
+        </div>
+      </div>
+      <div class="mp-history-drawer-body">
+        <div v-if="runsError" class="mp-hint bad">
+          <XCircle :size="14" />{{ runsError }}
+        </div>
+        <div v-else-if="!runs.length" class="mp-placeholder compact">
+          <History :size="22" />
+          <b>暂无历史运行</b>
+          <span>完成一次流量采集或离线解析后，历史记录会出现在这里。</span>
+        </div>
+        <ul v-else class="mp-run-list">
+        <li v-for="run in runs" :key="run.name" :class="{ active: currentRunName === run.name }">
+          <div class="mp-run-main">
+            <b>{{ run.time || run.name }}</b>
+            <small>
+              {{ run.plc || '未知 PLC' }} ·
+              {{ run.parsed ? `${run.unitCount} 个单元` : '仅采集' }} ·
+              {{ run.frameCount }} 帧 · {{ formatBytes(run.trafficBytes) }}
+              {{ run.hasVariables ? ` · ${run.variableCount} 个变量` : '' }}
+            </small>
+          </div>
+          <button
+            class="mp-btn"
+            type="button"
+            :disabled="isRunning || starting || parsing"
+            @click="openRun(run.name)"
+          >
+            {{ currentRunName === run.name ? '当前' : '查看' }}
+          </button>
+        </li>
+      </ul>
+      </div>
+    </aside>
+
+    <div v-if="historyOpen" class="mp-history-backdrop" @click="historyOpen = false" />
+    <button
+      v-if="!historyOpen"
+      class="mp-history-toggle"
+      type="button"
+      aria-label="展开运行历史"
+      @click="historyOpen = true"
+    >
+      <History :size="16" />
+      <span>运行历史</span>
+      <em v-if="runs.length">{{ runs.length }}</em>
+    </button>
+
+    <nav class="mp-quick-nav" aria-label="页面导航">
+      <button type="button" title="回到参数" @click="goTop">参数</button>
+      <button v-if="traffic" type="button" title="跳转到运行 / IO 流量" @click="goTraffic">流量</button>
+      <button v-if="parsed" type="button" title="跳转到控制程序" @click="goUnits">程序</button>
+      <button type="button" title="打开运行历史" @click="historyOpen = true">历史</button>
+    </nav>
   </div>
 </template>
