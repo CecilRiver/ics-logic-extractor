@@ -48,13 +48,22 @@ async function request(input: string, init: RequestInit): Promise<Record<string,
 }
 
 export async function startTrafficJob(input: TrafficJobInput): Promise<{ id: string }> {
-  const body = await request('/api/traffic/jobs', {
+  return startJob('/api/traffic/jobs', input);
+}
+
+export async function collectTraffic(input: TrafficJobInput): Promise<{ id: string }> {
+  return startJob('/api/traffic/collect', input);
+}
+
+async function startJob(path: string, input: TrafficJobInput): Promise<{ id: string }> {
+  const body = await request(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       ip: input.ip,
       port: input.port,
       timeout: input.timeout,
+      duration: input.duration,
     }),
   });
 
@@ -62,6 +71,21 @@ export async function startTrafficJob(input: TrafficJobInput): Promise<{ id: str
     throw new TrafficApiError('解析服务没有返回任务编号', { code: 'invalid_response' });
   }
   return { id: body.id };
+}
+
+export async function parseTrafficRun(name: string): Promise<Record<string, unknown>> {
+  const body = await request(`/api/traffic/runs/${encodeURIComponent(name)}/parse`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  return body.result && typeof body.result === 'object'
+    ? (body.result as Record<string, unknown>)
+    : body;
+}
+
+export function trafficDownloadUrl(name: string): string {
+  return `/api/traffic/runs/${encodeURIComponent(name)}/traffic`;
 }
 
 export async function fetchTrafficJob(id: string): Promise<TrafficJobView> {

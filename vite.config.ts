@@ -33,6 +33,10 @@ export default defineConfig({
     host: 'localhost',
     port: 5174,
     strictPort: true,
+    watch: {
+      // 运行产物由服务端写入，Vite 监听会短暂占用目录，导致 Windows 重命名失败。
+      ignored: ['**/data/**'],
+    },
   },
   test: {
     environment: 'node',

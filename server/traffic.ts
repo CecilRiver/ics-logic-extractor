@@ -5,7 +5,14 @@ import { isIP } from 'node:net';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { TrafficRunDetail, TrafficRunSummary } from '../src/domain/traffic.ts';
+import type {
+  TrafficCollection,
+  TrafficFrame,
+  TrafficPoint,
+  TrafficRunDetail,
+  TrafficRunSummary,
+  TrafficStats,
+} from '../src/domain/traffic.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -41,6 +48,8 @@ export interface TrafficResult {
   stu: string | null;
   runDir: string;
   units: TrafficUnit[];
+  parsed?: boolean;
+  traffic?: TrafficCollection | null;
 }
 
 export interface TrafficVariable {
@@ -161,18 +170,20 @@ function consumeLines(buffer: string, onLine: (line: string) => void): string {
   return rest;
 }
 
-function startFetch(
+function startJob(
   job: TrafficJob,
-  options: { ip: string; port: number; timeout: number; stu?: string; stuName?: string },
+  kind: 'fetch' | 'collect',
+  options: { ip: string; port: number; timeout: number; duration?: number; stu?: string; stuName?: string },
 ): void {
   const args = [
-    'fetch',
+    kind,
     '--ip', options.ip,
     '--port', String(options.port),
     '--timeout', String(options.timeout),
     '--out-root', dataRoot,
   ];
-  if (options.stu) {
+  if (kind === 'collect') args.push('--duration', String(options.duration ?? 10));
+  if (kind === 'fetch' && options.stu) {
     args.push('--stu', options.stu);
     if (options.stuName) args.push('--stu-name', options.stuName);
   }
@@ -241,7 +252,7 @@ function startFetch(
         const result = job.result;
         console.log(
           `[traffic] ${result.plc} 控制程序提取完成：${result.imageBytes} 字节 / `
-          + `${result.records} 条记录 / SHA-256 ${result.sha256} / ${result.units.length} 个单元`,
+          + `${result.records} 条记录 / SHA-256 ${result.sha256} / ${result.units?.length ?? 0} 个单元`,
         );
       } else {
         job.status = 'error';
@@ -315,7 +326,64 @@ function runVariablesForDir(runDir: string): Promise<TrafficVariable[]> {
   });
 }
 
-async function createJob(req: IncomingMessage, res: ServerResponse): Promise<void> {
+function runParse(runDir: string): Promise<Record<string, unknown>> {
+  const { command, args, env } = pythonArgs(['parse', '--run-dir', runDir]);
+
+  return new Promise<Record<string, unknown>>((resolvePromise, reject) => {
+    const child = spawn(command, args, { cwd: pythonDir, env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    let result: Record<string, unknown> | null = null;
+    let errorMessage = '';
+
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('离线解析超时，请重试'));
+    }, 60_000);
+
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout = consumeLines(stdout + chunk, (line) => {
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+        if (event.type === 'result') {
+          result = event;
+        } else if (event.type === 'error') {
+          errorMessage = String(event.message ?? '离线解析失败');
+        }
+      });
+    });
+
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-4000);
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`无法启动 Python：${error.message}`));
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && result) {
+        resolvePromise(result);
+      } else {
+        reject(new Error(errorMessage || stderr.trim() || `离线解析进程退出（code ${code ?? 'unknown'}）`));
+      }
+    });
+  });
+}
+
+async function createJob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  kind: 'fetch' | 'collect',
+): Promise<void> {
   let body: Record<string, unknown>;
   try {
     body = await readBody(req);
@@ -346,6 +414,12 @@ async function createJob(req: IncomingMessage, res: ServerResponse): Promise<voi
     return;
   }
 
+  const durationRaw = Number(body.duration ?? 10);
+  if (!Number.isFinite(durationRaw) || durationRaw < 1 || durationRaw > 60) {
+    fail(res, 400, 'invalid_duration', '采集时长必须在 1–60 秒之间');
+    return;
+  }
+
   const job: TrafficJob = {
     id: randomUUID(),
     status: 'running',
@@ -361,7 +435,7 @@ async function createJob(req: IncomingMessage, res: ServerResponse): Promise<voi
   const stuName = typeof body.stuName === 'string' ? body.stuName.trim() : '';
 
   try {
-    if (typeof body.stuBase64 === 'string' && body.stuBase64) {
+    if (kind === 'fetch' && typeof body.stuBase64 === 'string' && body.stuBase64) {
       const data = Buffer.from(body.stuBase64, 'base64');
       if (data.length === 0) throw new Error('empty');
       if (data.length > 20 * 1024 * 1024) {
@@ -383,7 +457,14 @@ async function createJob(req: IncomingMessage, res: ServerResponse): Promise<voi
   }
 
   jobs.set(job.id, job);
-  startFetch(job, { ip, port: portRaw, timeout: timeoutRaw, stu: job.incomingStu, stuName: stuName || undefined });
+  startJob(job, kind, {
+    ip,
+    port: portRaw,
+    timeout: timeoutRaw,
+    duration: durationRaw,
+    stu: job.incomingStu,
+    stuName: stuName || undefined,
+  });
   send(res, 202, { id: job.id });
 }
 
@@ -459,6 +540,12 @@ async function listRuns(): Promise<TrafficRunSummary[]> {
     const info = await stat(dir).catch(() => null);
     const variables = await readRunVariables(dir);
     const units = Array.isArray(manifest.units) ? manifest.units : [];
+    const hasSources = await stat(join(dir, '02_逆向'))
+      .then((value) => value.isDirectory())
+      .catch(() => false);
+    const traffic = (manifest.traffic && typeof manifest.traffic === 'object'
+      ? manifest.traffic
+      : {}) as Record<string, unknown>;
     runs.push({
       name: entry.name,
       plc: String(manifest.plc ?? ''),
@@ -469,6 +556,9 @@ async function listRuns(): Promise<TrafficRunSummary[]> {
       unitCount: units.length,
       variableCount: variables?.length ?? 0,
       hasVariables: variables !== null,
+      parsed: Boolean(manifest.parsed) || hasSources,
+      frameCount: Number(traffic.frames ?? 0),
+      trafficBytes: Number(traffic.bytes ?? 0),
       modifiedAt: info ? info.mtime.toISOString() : '',
     });
   }
@@ -484,13 +574,13 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
   if (!manifest) return null;
 
   const sourceDir = join(dir, '02_逆向');
-  let files: string[];
+  let files: string[] = [];
   try {
     files = (await readdir(sourceDir))
       .filter((file) => file.endsWith('.st'))
       .sort((a, b) => a.localeCompare(b));
   } catch {
-    return null;
+    files = [];
   }
 
   const meta = Array.isArray(manifest.units)
@@ -513,6 +603,25 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
     });
   }
 
+  let traffic: TrafficResult['traffic'] = null;
+  try {
+    const value = JSON.parse(await readFile(join(dir, '流量', 'frames.json'), 'utf8')) as {
+      frames?: unknown;
+      points?: unknown;
+      stats?: unknown;
+    };
+    traffic = {
+      file: join(dir, '流量', '采集流量.pcapng'),
+      frames: Array.isArray(value.frames) ? (value.frames as TrafficFrame[]) : [],
+      points: Array.isArray(value.points) ? (value.points as TrafficPoint[]) : [],
+      stats: (value.stats && typeof value.stats === 'object'
+        ? value.stats
+        : {}) as TrafficStats,
+    };
+  } catch {
+    traffic = null;
+  }
+
   const result: TrafficResult = {
     plc: String(manifest.plc ?? ''),
     port: Number(manifest.port ?? 502),
@@ -524,6 +633,8 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
     stu: manifest.stu ? String(manifest.stu) : null,
     runDir: dir,
     units,
+    parsed: Boolean(manifest.parsed) || files.length > 0,
+    traffic,
   };
 
   return { name, result, variables: await readRunVariables(dir) };
@@ -541,6 +652,46 @@ export async function trafficMiddleware(
   try {
     if (pathname === '/runs' && req.method === 'GET') {
       send(res, 200, { runs: await listRuns() });
+      return;
+    }
+
+    const runParseMatch = pathname.match(/^\/runs\/([0-9A-Za-z._-]+)\/parse$/);
+    if (runParseMatch && req.method === 'POST') {
+      const name = runParseMatch[1];
+      const dir = runDirFor(name);
+      if (!dir || !(await readManifest(dir))) {
+        fail(res, 404, 'not_found', '运行记录不存在');
+        return;
+      }
+      try {
+        const result = await runParse(dir);
+        send(res, 200, { name, result });
+      } catch (error) {
+        fail(res, 500, 'parse_failed', error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    const runTrafficMatch = pathname.match(/^\/runs\/([0-9A-Za-z._-]+)\/traffic$/);
+    if (runTrafficMatch && req.method === 'GET') {
+      const name = runTrafficMatch[1];
+      const dir = runDirFor(name);
+      if (!dir) {
+        fail(res, 404, 'not_found', '运行记录不存在');
+        return;
+      }
+      try {
+        const body = await readFile(join(dir, '流量', '采集流量.pcapng'));
+        res.writeHead(200, {
+          'content-type': 'application/vnd.tcpdump.pcapng',
+          'content-length': body.byteLength,
+          'content-disposition': `attachment; filename="${name}.pcapng"`,
+          'cache-control': 'no-store',
+        });
+        res.end(body);
+      } catch {
+        fail(res, 404, 'not_found', '没有采集流量文件');
+      }
       return;
     }
 
@@ -572,8 +723,13 @@ export async function trafficMiddleware(
       return;
     }
 
+    if (pathname === '/collect' && req.method === 'POST') {
+      await createJob(req, res, 'collect');
+      return;
+    }
+
     if (pathname === '/jobs' && req.method === 'POST') {
-      await createJob(req, res);
+      await createJob(req, res, 'fetch');
       return;
     }
 

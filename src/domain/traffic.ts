@@ -9,6 +9,57 @@ export interface TrafficUnit {
   text: string;
 }
 
+export type TrafficCategory = 'upload' | 'runtime' | 'io';
+
+export interface TrafficFrame {
+  index: number;
+  time: string;
+  direction: 'request' | 'response';
+  category: TrafficCategory;
+  protocol: string;
+  function: string;
+  summary: string;
+  bytes: number;
+  hex: string;
+  recordIndex?: number | null;
+  address?: string;
+  count?: number;
+  values?: number[] | null;
+}
+
+export interface TrafficPoint {
+  category: TrafficCategory;
+  area: string;
+  address: string;
+  value: number;
+}
+
+export interface TrafficRange {
+  category: TrafficCategory;
+  area: string;
+  start: number;
+  end: number;
+}
+
+export interface TrafficStats {
+  frames: number;
+  bytes: number;
+  upload: { frames: number; bytes: number };
+  runtime: { frames: number; bytes: number };
+  io: { frames: number; bytes: number };
+  samples: number;
+  duration_ms: number;
+  client_ip: string;
+  ranges: TrafficRange[];
+}
+
+export interface TrafficCollection {
+  file: string;
+  frames: TrafficFrame[];
+  points: TrafficPoint[];
+  stats: TrafficStats;
+}
+
 export interface TrafficResult {
   plc: string;
   port: number;
@@ -20,6 +71,8 @@ export interface TrafficResult {
   stu: string | null;
   runDir: string;
   units: TrafficUnit[];
+  parsed?: boolean;
+  traffic?: TrafficCollection | null;
 }
 
 export interface TrafficVariable {
@@ -29,6 +82,7 @@ export interface TrafficVariable {
   category: string;
   range: string;
   basis: string;
+  inferred?: boolean;
 }
 
 export type TrafficJobStatus = 'running' | 'done' | 'error';
@@ -51,6 +105,7 @@ export interface TrafficJobInput {
   ip: string;
   port: number;
   timeout: number;
+  duration?: number;
 }
 
 export type TrafficQualityLevel = '高' | '中' | '低';
@@ -79,6 +134,9 @@ export interface TrafficRunSummary {
   unitCount: number;
   variableCount: number;
   hasVariables: boolean;
+  parsed: boolean;
+  frameCount: number;
+  trafficBytes: number;
   modifiedAt: string;
 }
 
@@ -98,11 +156,11 @@ export function variableQuality(row: TrafficVariable): TrafficQuality {
 
   const type = (row.type ?? '').trim();
   if (!type || type === '未知') score -= 20;
-  else if (type.includes('推断')) score -= 5;
+  else if (row.inferred || type.includes('推断')) score -= 5;
 
   const category = (row.category ?? '').trim();
   if (!category || category === '未知') score -= 10;
-  else if (category.includes('推断')) score -= 5;
+  else if (row.inferred || category.includes('推断')) score -= 5;
 
   const basis = (row.basis ?? '').trim();
   if (!basis || basis === '无法从源码推断') score -= 15;
