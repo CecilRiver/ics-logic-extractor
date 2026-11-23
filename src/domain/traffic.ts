@@ -7,6 +7,7 @@ export interface TrafficUnit {
   declared: boolean;
   streamOffset: string;
   text: string;
+  plc?: string;
 }
 
 export type TrafficCategory = 'upload' | 'runtime' | 'io';
@@ -72,6 +73,7 @@ export interface TrafficResult {
   runDir: string;
   units: TrafficUnit[];
   parsed?: boolean;
+  plcs?: string[];
   traffic?: TrafficCollection | null;
 }
 
@@ -106,6 +108,7 @@ export interface TrafficJobInput {
   port: number;
   timeout: number;
   duration?: number;
+  plcs?: string[];
 }
 
 export type TrafficQualityLevel = '高' | '中' | '低';
@@ -135,6 +138,7 @@ export interface TrafficRunSummary {
   variableCount: number;
   hasVariables: boolean;
   parsed: boolean;
+  plcs?: string[];
   frameCount: number;
   trafficBytes: number;
   modifiedAt: string;

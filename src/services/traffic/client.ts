@@ -64,6 +64,7 @@ async function startJob(path: string, input: TrafficJobInput): Promise<{ id: str
       port: input.port,
       timeout: input.timeout,
       duration: input.duration,
+      plcs: input.plcs,
     }),
   });
 

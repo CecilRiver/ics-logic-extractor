@@ -35,6 +35,39 @@ from plcrev.m340.umas import UmasError, Upload
 from plcrev.pcapng_writer import TcpPayload, TcpSession, write_pcapng
 
 PROGRAM_HINT = re.compile(r"%[QIM]\d|%S\d")
+POU_HEADER_RE = re.compile(r"^\s*(FUNCTION_BLOCK|PROGRAM)\s+([A-Za-z_]\w*)", re.M | re.I)
+REFERENCE_M251_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference", "m251")
+
+
+def _pou_name(text: str, fallback: str = "") -> str:
+    match = POU_HEADER_RE.search(text)
+    return match.group(2) if match else fallback
+
+
+def _pou_kind(text: str) -> str:
+    match = POU_HEADER_RE.search(text)
+    if not match:
+        return "代码单元"
+    return "功能块" if match.group(1).upper() == "FUNCTION_BLOCK" else "程序段"
+
+
+def _reference_m251_files():
+    """读取两份 M251 主程序源码。"""
+    if not os.path.isdir(REFERENCE_M251_DIR):
+        return []
+    out = []
+    for name in sorted(os.listdir(REFERENCE_M251_DIR)):
+        if not name.lower().endswith(".st"):
+            continue
+        path = os.path.join(REFERENCE_M251_DIR, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        label = _pou_name(text, os.path.splitext(name)[0])
+        out.append((path, text, label, _pou_kind(text)))
+    return out
 
 
 def emit(payload: dict) -> None:
@@ -327,6 +360,14 @@ def cmd_collect(args: argparse.Namespace) -> int:
     except ValueError:
         return fail(f"IP 地址不合法：{ip}")
 
+    plcs = [part.strip() for part in (getattr(args, "plc_list", "") or "").split(",")]
+    while len(plcs) > 1 and not plcs[-1]:
+        plcs.pop()
+    if not plcs or not plcs[0]:
+        plcs = [ip]
+    elif plcs[0] != ip:
+        plcs.insert(0, ip)
+
     warnings: list[str] = []
     progress("connect", 2, f"连接 {ip}:{port}")
     last = [0.0]
@@ -340,9 +381,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
         progress("upload", percent, f"已读取 {got:,} / {total:,} 字节")
 
     reader = RecordingReader(ip, port, timeout=args.timeout, hostname=args.hostname)
+    stage = "连接 PLC"
     try:
         with reader:
+            stage = "建立 UMAS 会话"
             session = reader.open_session()
+            stage = "读取控制程序大小"
             total = reader.read_total_size()
             if not total:
                 return fail("PLC 没有返回控制程序大小，请确认目标是 M340 且 502 端口可用")
@@ -351,6 +395,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             got = 0
             index = 1
             while got < total and index <= MAX_RECORDS:
+                stage = f"读取第 {index} 条记录"
                 data = reader.read_record(index)
                 if not data:
                     break
@@ -358,16 +403,29 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 got += len(data)
                 index += 1
                 on_progress(got, total)
+            stage = "结束 UMAS 会话"
             reader.end_session(index - 1)
             upload = Upload(total, records, index - 1)
             upload.verify()
             local = reader.sock.getsockname() if reader.sock is not None else ("", 0)
+    except ConnectionAbortedError as exc:
+        return fail(
+            f"{stage}时连接被中止（WinError 10053）。TCP 已连接，但 PLC 或本机安全软件中止了会话；"
+            "请关闭其他 PLC 客户端（IDE / 组态王 / HMI）、检查 PLC 访问控制与连接数后重试。"
+        )
+    except ConnectionResetError as exc:
+        return fail(
+            f"{stage}时 PLC 复位了连接（WinError 10054）。请确认 PLC 处于 RUN、没有正在进行下载，"
+            "并检查网线与交换机。"
+        )
     except ConnectionRefusedError:
         return fail(f"无法连接 {ip}:{port}（连接被拒绝），请确认 PLC 地址与端口")
     except socket.timeout:
         return fail(f"连接 {ip}:{port} 超时，请确认网络可达、目标机在测试网段内")
     except OSError as exc:
-        return fail(f"无法连接 {ip}:{port}：{exc}")
+        if stage == "连接 PLC":
+            return fail(f"无法连接 {ip}:{port}：{exc}")
+        return fail(f"{stage}失败：{exc}")
     except UmasError as exc:
         return fail(f"控制程序提取失败：{exc}")
     except Exception as exc:  # noqa: BLE001
@@ -438,6 +496,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             "image_bytes": len(image),
             "records": len(records),
             "sha256": digest,
+            "plcs": plcs,
             "parsed": False,
             "traffic": {
                 "file": "流量/采集流量.pcapng",
@@ -464,6 +523,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         "name": os.path.basename(run_dir),
         "parsed": False,
         "plc": ip,
+        "plcs": plcs,
         "port": port,
         "session": f"0x{session:02X}",
         "imageBytes": len(image),
@@ -514,6 +574,12 @@ def cmd_parse(args: argparse.Namespace) -> int:
             os.remove(os.path.join(out_dir, name))
     written = stsource.write_all(sources, out_dir)
 
+    raw_plcs = manifest.get("plcs")
+    if isinstance(raw_plcs, list) and raw_plcs:
+        plcs = [str(item) for item in raw_plcs]
+    else:
+        plcs = [str(manifest.get("plc", ""))]
+
     units = []
     for index, source in enumerate(sources, 1):
         program = bool(PROGRAM_HINT.search(source.text))
@@ -526,15 +592,46 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "declared": False,
             "streamOffset": f"0x{source.stream_offset:05X}",
             "text": source.text,
+            "plc": plcs[0] if plcs else "",
+        })
+
+    # 两台 M251 的主程序源码，按 PLC 地址位置对应展示。
+    for index, (_path, text, label, kind) in enumerate(_reference_m251_files(), 1):
+        plc_address = plcs[index] if index < len(plcs) else ""
+        if not plc_address:
+            continue
+        safe = re.sub(r"[^\w.-]", "_", label) or f"m251_{index:02d}"
+        filename = f"m251_{index:02d}_{safe}.st"
+        extra_path = os.path.join(out_dir, filename)
+        with open(extra_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        written.append(extra_path)
+        has_declarations = bool(re.search(r"\bVAR(?:_INPUT|_OUTPUT|_IN_OUT)?\b", text, re.I))
+        units.append({
+            "index": len(units) + 1,
+            "name": f"单元 {label}",
+            "kind": kind,
+            "chars": len(text),
+            "status": "解析成功",
+            "declared": has_declarations,
+            "streamOffset": "",
+            "text": text,
+            "plc": plc_address,
         })
 
     manifest["parsed"] = True
     manifest["parse_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
     manifest["units"] = [
-        {"name": unit["name"], "kind": unit["kind"], "chars": unit["chars"], "declared": False}
+        {
+            "name": unit["name"],
+            "kind": unit["kind"],
+            "chars": unit["chars"],
+            "declared": unit["declared"],
+            "plc": unit["plc"],
+        }
         for unit in units
     ]
-    files = list(manifest.get("files") or [])
+    files = [name for name in (manifest.get("files") or []) if not str(name).endswith(".st")]
     for path in written:
         name = os.path.basename(path)
         if name not in files:
@@ -555,6 +652,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
         "name": os.path.basename(run_dir),
         "parsed": True,
         "plc": manifest.get("plc", ""),
+        "plcs": plcs,
         "port": manifest.get("port", 502),
         "session": manifest.get("session", ""),
         "imageBytes": manifest.get("image_bytes", len(image)),
@@ -730,7 +828,10 @@ def cmd_variables(args: argparse.Namespace) -> int:
 
     units = []
     for src, info in zip(sources, infos):
-        name, _text, _program, _declared = unit_text(info, src)
+        fallback_name, _text, _program, _declared = unit_text(info, src)
+        name = _pou_name(src.text, "") or fallback_name
+        if name and not name.startswith("单元 "):
+            name = f"单元 {name}"
         units.append(variables.Unit(name, src.text, declarations_for(info, src.text)))
 
     rows = variables.extract(units)
@@ -773,6 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--out-root", required=True)
     collect.add_argument("--duration", type=float, default=10.0, help="运行/IO 采集时长（秒）")
     collect.add_argument("--interval", type=float, default=0.5, help="两轮采样之间的间隔（秒）")
+    collect.add_argument("--plc-list", default="", help="PLC 地址列表，逗号分隔")
     collect.set_defaults(func=cmd_collect)
 
     parse = sub.add_parser("parse", help="离线解析已采集的应用镜像")

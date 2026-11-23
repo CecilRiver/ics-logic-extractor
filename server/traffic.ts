@@ -35,6 +35,7 @@ export interface TrafficUnit {
   declared: boolean;
   streamOffset: string;
   text: string;
+  plc?: string;
 }
 
 export interface TrafficResult {
@@ -49,6 +50,7 @@ export interface TrafficResult {
   runDir: string;
   units: TrafficUnit[];
   parsed?: boolean;
+  plcs?: string[];
   traffic?: TrafficCollection | null;
 }
 
@@ -173,8 +175,20 @@ function consumeLines(buffer: string, onLine: (line: string) => void): string {
 function startJob(
   job: TrafficJob,
   kind: 'fetch' | 'collect',
-  options: { ip: string; port: number; timeout: number; duration?: number; stu?: string; stuName?: string },
+  options: {
+    ip: string;
+    port: number;
+    timeout: number;
+    duration?: number;
+    plcs?: string[];
+    stu?: string;
+    stuName?: string;
+  },
 ): void {
+  const plcs = options.plcs?.length ? options.plcs : [options.ip];
+  // duration 是每台 PLC 的采集时长，多台地址累计为总时长；空地址不计入。
+  const activePlcs = plcs.filter(Boolean);
+  const totalDuration = (options.duration ?? 10) * Math.max(1, activePlcs.length);
   const args = [
     kind,
     '--ip', options.ip,
@@ -182,7 +196,10 @@ function startJob(
     '--timeout', String(options.timeout),
     '--out-root', dataRoot,
   ];
-  if (kind === 'collect') args.push('--duration', String(options.duration ?? 10));
+  if (kind === 'collect') {
+    args.push('--duration', String(totalDuration));
+    args.push('--plc-list', plcs.join(','));
+  }
   if (kind === 'fetch' && options.stu) {
     args.push('--stu', options.stu);
     if (options.stuName) args.push('--stu-name', options.stuName);
@@ -194,10 +211,14 @@ function startJob(
 
   let stdout = '';
   let stderr = '';
+  // 采集时长随 PLC 数量累计，超时上限同步放宽，避免多台 PLC 时被误杀。
+  const jobTimeoutMs = kind === 'collect'
+    ? Math.max(JOB_TIMEOUT_MS, totalDuration * 1000 + 120_000)
+    : JOB_TIMEOUT_MS;
   const timer = setTimeout(() => {
-    job.error = `解析超时（${Math.round(JOB_TIMEOUT_MS / 1000)} 秒），请检查 PLC 网络后重试`;
+    job.error = `解析超时（${Math.round(jobTimeoutMs / 1000)} 秒），请检查 PLC 网络后重试`;
     child.kill();
-  }, JOB_TIMEOUT_MS);
+  }, jobTimeoutMs);
 
   child.stdout?.setEncoding('utf8');
   child.stdout?.on('data', (chunk: string) => {
@@ -402,6 +423,22 @@ async function createJob(
     return;
   }
 
+  const plcListRaw = Array.isArray(body.plcs)
+    ? body.plcs.map((value) => String(value).trim())
+    : [];
+  // 保留空位，便于解析结果按 PLC 2 / PLC 3 的位置对应展示。
+  const plcs = [ip, ...(plcListRaw.length && plcListRaw[0] === ip
+    ? plcListRaw.slice(1)
+    : plcListRaw.filter((value) => value !== ip))];
+  if (plcs.length > 10) {
+    fail(res, 400, 'too_many_plcs', 'PLC 地址数量不能超过 10 个');
+    return;
+  }
+  if (plcs.filter(Boolean).some((address) => isIP(address) === 0)) {
+    fail(res, 400, 'invalid_plcs', 'PLC 地址列表中有不合法的 IP 地址');
+    return;
+  }
+
   const portRaw = Number(body.port ?? 502);
   if (!Number.isInteger(portRaw) || portRaw < 1 || portRaw > 65535) {
     fail(res, 400, 'invalid_port', '端口必须是 1–65535 的整数');
@@ -416,7 +453,7 @@ async function createJob(
 
   const durationRaw = Number(body.duration ?? 10);
   if (!Number.isFinite(durationRaw) || durationRaw < 1 || durationRaw > 60) {
-    fail(res, 400, 'invalid_duration', '采集时长必须在 1–60 秒之间');
+    fail(res, 400, 'invalid_duration', '单台采集时长必须在 1–60 秒之间');
     return;
   }
 
@@ -462,6 +499,7 @@ async function createJob(
     port: portRaw,
     timeout: timeoutRaw,
     duration: durationRaw,
+    plcs,
     stu: job.incomingStu,
     stuName: stuName || undefined,
   });
@@ -546,9 +584,13 @@ async function listRuns(): Promise<TrafficRunSummary[]> {
     const traffic = (manifest.traffic && typeof manifest.traffic === 'object'
       ? manifest.traffic
       : {}) as Record<string, unknown>;
+    const plcs = Array.isArray(manifest.plcs)
+      ? manifest.plcs.map((value) => String(value))
+      : (manifest.plc ? [String(manifest.plc)] : []);
     runs.push({
       name: entry.name,
       plc: String(manifest.plc ?? ''),
+      plcs,
       time: String(manifest.time ?? ''),
       imageBytes: Number(manifest.image_bytes ?? 0),
       records: Number(manifest.records ?? 0),
@@ -578,7 +620,11 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
   try {
     files = (await readdir(sourceDir))
       .filter((file) => file.endsWith('.st'))
-      .sort((a, b) => a.localeCompare(b));
+      // M340 源码排在 M251 前面，与 manifest.units 的顺序保持一致。
+      .sort((a, b) => {
+        const weight = (file: string) => (file.startsWith('m251_') ? 1 : 0);
+        return weight(a) - weight(b) || a.localeCompare(b);
+      });
   } catch {
     files = [];
   }
@@ -600,6 +646,7 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
       declared: Boolean(info.declared),
       streamOffset: offset ? `0x${offset}` : '',
       text,
+      plc: info.plc ? String(info.plc) : '',
     });
   }
 
@@ -624,6 +671,9 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
 
   const result: TrafficResult = {
     plc: String(manifest.plc ?? ''),
+    plcs: Array.isArray(manifest.plcs)
+      ? manifest.plcs.map((value) => String(value))
+      : (manifest.plc ? [String(manifest.plc)] : []),
     port: Number(manifest.port ?? 502),
     session: String(manifest.session ?? ''),
     imageBytes: Number(manifest.image_bytes ?? 0),

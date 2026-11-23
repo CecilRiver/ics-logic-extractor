@@ -58,10 +58,15 @@ const STAGE_TEXT: Record<string, string> = {
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-const ipInput = ref('');
+const plcAddresses = ref<string[]>(['']);
 const portInput = ref(502);
 const timeoutInput = ref(10);
 const durationInput = ref(10);
+const plcCount = computed(() => plcAddresses.value.filter((address) => address.trim()).length);
+const totalDuration = computed(() => {
+  const perPlc = Math.min(60, Math.max(1, Math.round(Number(durationInput.value) || 10)));
+  return perPlc * Math.max(1, plcCount.value);
+});
 
 const job = ref<TrafficJobView | null>(null);
 const starting = ref(false);
@@ -127,6 +132,26 @@ const trafficStats = computed<TrafficStats>(() => {
 });
 const currentRunName = computed(() => result.value?.runDir.split(/[\\/]/).pop() ?? '');
 const downloadUrl = computed(() => (currentRunName.value ? trafficDownloadUrl(currentRunName.value) : ''));
+const currentPlcs = computed(() => {
+  const list = result.value?.plcs?.filter(Boolean) ?? [];
+  if (list.length) return list;
+  return result.value?.plc ? [result.value.plc] : [];
+});
+
+function plcLabel(list?: string[]): string {
+  const values = (list ?? []).filter(Boolean);
+  if (!values.length) return '—';
+  return values.length > 1 ? `${values[0]} 等 ${values.length} 个 PLC` : values[0];
+}
+
+function addPlcAddress() {
+  if (plcAddresses.value.length >= 10) return;
+  plcAddresses.value.push('');
+}
+
+function removePlcAddress(index: number) {
+  if (index > 0) plcAddresses.value.splice(index, 1);
+}
 const canCollect = computed(() => !starting.value && !isRunning.value && !parsing.value);
 const canParse = computed(() =>
   Boolean(result.value) && Boolean(currentRunName.value)
@@ -136,6 +161,7 @@ const variablesEmpty = computed(() => variables.value !== null && variables.valu
 
 const allVariables = computed(() => variables.value ?? []);
 const hasVariables = computed(() => allVariables.value.length > 0);
+const hasInferred = computed(() => allVariables.value.some((row) => row.inferred));
 const decoratedVariables = computed(() =>
   allVariables.value.map((row) => ({ row, quality: variableQuality(row) })),
 );
@@ -163,7 +189,7 @@ const filteredUnits = computed(() => {
   const keyword = unitSearch.value.trim().toLowerCase();
   if (!keyword) return units.value;
   return units.value.filter((unit) =>
-    [unit.name, unit.kind, unit.status].join(' ').toLowerCase().includes(keyword),
+    [unit.name, unit.plc ?? '', unit.kind, unit.status].join(' ').toLowerCase().includes(keyword),
   );
 });
 
@@ -353,6 +379,12 @@ async function openRun(name: string) {
     };
     trafficCollapsed.value = false;
     unitsCollapsed.value = false;
+    const loaded = detail.result.plcs ?? [];
+    const loadedPlcs = loaded.length
+      ? [...loaded]
+      : (detail.result.plc ? [detail.result.plc] : ['']);
+    while (loadedPlcs.length > 1 && !loadedPlcs[loadedPlcs.length - 1]) loadedPlcs.pop();
+    plcAddresses.value = loadedPlcs;
     if (detail.result.traffic && !detail.result.parsed) {
       void scrollToSection(trafficSection.value);
     } else if (detail.result.parsed) {
@@ -389,11 +421,14 @@ async function poll(id: string) {
 
 async function collect() {
   if (!canCollect.value) return;
-  const ip = ipInput.value.trim();
+  const rows = plcAddresses.value.map((address) => address.trim());
+  while (rows.length > 1 && !rows[rows.length - 1]) rows.pop();
+  const ip = rows[0] ?? '';
   if (!ip) {
-    errorMessage.value = '请填写被测 PLC 的 IP 地址';
+    errorMessage.value = '请至少填写 1 个 PLC 的 IP 地址';
     return;
   }
+  const addresses = rows;
 
   stopPolling();
   starting.value = true;
@@ -415,6 +450,7 @@ async function collect() {
       port: Math.min(65535, Math.max(1, Math.round(Number(portInput.value) || 502))),
       timeout: Math.min(60, Math.max(1, Number(timeoutInput.value) || 10)),
       duration: Math.min(60, Math.max(1, Math.round(Number(durationInput.value) || 10))),
+      plcs: addresses,
     });
     job.value = {
       id,
@@ -540,14 +576,32 @@ onUnmounted(stopPolling);
       <section class="mp-card">
         <div class="mp-card-head">
           <div><Upload :size="16" /><h2>PLC 网络参数</h2></div>
-          <span class="mp-muted">M340 · TCP 502</span>
+          <span class="mp-muted">M340 / M251 · TCP 502</span>
         </div>
 
         <form class="tp-form" @submit.prevent="collect">
-          <label class="tp-field">
-            <span>PLC 地址</span>
-            <input v-model="ipInput" type="text" placeholder="192.168.20.55" autocomplete="off" />
-          </label>
+          <div class="tp-plc-list">
+            <label v-for="(_, index) in plcAddresses" :key="index" class="tp-field">
+              <span>PLC {{ index + 1 }} 地址</span>
+              <div class="tp-address-row">
+                <input
+                  v-model="plcAddresses[index]"
+                  type="text"
+                  :placeholder="index === 0 ? '192.168.20.55' : '请输入 PLC IP'"
+                  autocomplete="off"
+                />
+                <button
+                  v-if="index > 0"
+                  class="mp-text-btn"
+                  type="button"
+                  @click="removePlcAddress(index)"
+                >
+                  移除
+                </button>
+              </div>
+            </label>
+            <button class="mp-btn" type="button" @click="addPlcAddress">+ 添加 PLC 地址</button>
+          </div>
           <label class="tp-field">
             <span>端口</span>
             <input v-model.number="portInput" type="number" min="1" max="65535" />
@@ -557,8 +611,11 @@ onUnmounted(stopPolling);
             <input v-model.number="timeoutInput" type="number" min="1" max="60" />
           </label>
           <label class="tp-field">
-            <span>采集时长（秒）</span>
+            <span>单台采集时长（秒）</span>
             <input v-model.number="durationInput" type="number" min="1" max="60" />
+            <small v-if="plcCount > 1" class="tp-duration-hint">
+              共 {{ plcCount }} 台 PLC，预计采集 {{ totalDuration }} 秒
+            </small>
           </label>
         </form>
 
@@ -568,6 +625,9 @@ onUnmounted(stopPolling);
             <Activity v-else :size="15" />{{ isRunning ? '采集中…' : '收集流量' }}
           </button>
         </div>
+        <p class="tp-note">
+          填写多个 PLC 地址时，将一并采集运行 / IO 流量并解析控制程序。
+        </p>
         <p class="tp-note">
           先收集上载、运行与 IO 流量并保存 PCAPNG，再在流量区点击「开始解析」离线解析控制程序。
         </p>
@@ -641,7 +701,7 @@ onUnmounted(stopPolling);
         <div v-if="result" class="tp-current-run">
           <span>当前运行</span>
           <code>{{ runLabel(currentRunName) }}</code>
-          <span class="mp-muted">SHA {{ result.sha256 ? `${result.sha256.slice(0, 12)}…` : '—' }}</span>
+          <span class="mp-muted">{{ plcLabel(currentPlcs) }} · SHA {{ result.sha256 ? `${result.sha256.slice(0, 12)}…` : '—' }}</span>
         </div>
         <div v-if="result && parsed" class="mp-inline-state">
           <CheckCircle2 :size="14" />已完成控制程序提取：{{ result.records }} 条记录 / {{ formatBytes(result.imageBytes) }}
@@ -657,7 +717,10 @@ onUnmounted(stopPolling);
       <div class="mp-card-head">
         <div><Activity :size="16" /><h2>运行 / IO 流量</h2></div>
         <div class="tp-traffic-head-actions">
-          <span class="tp-current-run">当前运行 <code>{{ runLabel(currentRunName) }}</code></span>
+          <span class="tp-current-run">
+            当前运行 <code>{{ runLabel(currentRunName) }}</code>
+            <span class="mp-muted">{{ plcLabel(currentPlcs) }}</span>
+          </span>
           <button class="mp-btn primary" type="button" :disabled="!canParse" @click="parse">
             <LoaderCircle v-if="parsing" :size="15" class="mp-spin" />
             <Play v-else :size="15" />{{ parsing ? '解析中…' : parsed ? '重新解析' : '开始解析' }}
@@ -793,7 +856,10 @@ onUnmounted(stopPolling);
       <div class="mp-card-head">
         <div><FileText :size="16" /><h2>控制程序</h2></div>
         <div class="tp-unit-head-actions">
-          <span class="tp-current-run">本次解析 <code>{{ runLabel(currentRunName) }}</code></span>
+          <span class="tp-current-run">
+            本次解析 <code>{{ runLabel(currentRunName) }}</code>
+            <span class="mp-muted">{{ plcLabel(currentPlcs) }}</span>
+          </span>
           <span class="mp-chip ok"><CheckCircle2 :size="13" />解析成功 · {{ units.length }} 个单元</span>
           <button class="mp-btn" type="button" @click="unitsCollapsed = !unitsCollapsed">
             {{ unitsCollapsed ? '展开' : '收起' }}
@@ -813,14 +879,14 @@ onUnmounted(stopPolling);
       </div>
 
       <div class="tp-table-toolbar">
-        <input v-model="unitSearch" type="text" placeholder="搜索单元名称 / 类型…" />
+        <input v-model="unitSearch" type="text" placeholder="搜索名称 / PLC / 类型…" />
         <span class="mp-muted">显示 {{ filteredUnits.length }} / {{ units.length }}</span>
       </div>
 
       <div class="mp-table-wrap">
         <table class="mp-table">
           <thead>
-            <tr><th>名称</th><th>类型</th><th>字符数</th><th>解析状态</th></tr>
+            <tr><th>名称</th><th>PLC</th><th>类型</th><th>字符数</th><th>解析状态</th></tr>
           </thead>
           <tbody>
             <template v-for="unit in filteredUnits" :key="unit.index">
@@ -829,18 +895,19 @@ onUnmounted(stopPolling);
                   <span class="tp-caret">{{ expanded.includes(unit.index) ? '▾' : '▸' }}</span>
                   <b>{{ unit.name }}</b>
                 </td>
+                <td class="mono">{{ unit.plc || '—' }}</td>
                 <td>{{ unit.kind }}</td>
                 <td class="mono">{{ unit.chars }}</td>
                 <td><span class="mp-tag ok">{{ unit.status }}</span></td>
               </tr>
               <tr v-if="expanded.includes(unit.index)">
-                <td colspan="4" class="tp-source-cell">
+                <td colspan="5" class="tp-source-cell">
                   <pre class="tp-source">{{ unit.text }}</pre>
                 </td>
               </tr>
             </template>
             <tr v-if="!filteredUnits.length">
-              <td colspan="4" class="mp-empty">{{ units.length ? '没有符合筛选条件的单元' : '没有解析出控制程序源码' }}</td>
+              <td colspan="5" class="mp-empty">{{ units.length ? '没有符合筛选条件的单元' : '没有解析出控制程序源码' }}</td>
             </tr>
           </tbody>
         </table>
@@ -943,8 +1010,8 @@ onUnmounted(stopPolling);
             </div>
           </template>
         </template>
-        <p v-if="!result.declarations" class="tp-var-note">
-          类型与类别为按代码用法推断，仅供参考；值域依据见「依据」列。
+        <p v-if="hasInferred" class="tp-var-note">
+          部分变量的类型与类别为按代码用法推断，仅供参考；值域依据见「依据」列。
         </p>
       </template>
       </div>
@@ -980,7 +1047,7 @@ onUnmounted(stopPolling);
           <div class="mp-run-main">
             <b>{{ run.time || run.name }}</b>
             <small>
-              {{ run.plc || '未知 PLC' }} ·
+              {{ plcLabel(run.plcs && run.plcs.length ? run.plcs : (run.plc ? [run.plc] : [])) }} ·
               {{ run.parsed ? `${run.unitCount} 个单元` : '仅采集' }} ·
               {{ run.frameCount }} 帧 · {{ formatBytes(run.trafficBytes) }}
               {{ run.hasVariables ? ` · ${run.variableCount} 个变量` : '' }}

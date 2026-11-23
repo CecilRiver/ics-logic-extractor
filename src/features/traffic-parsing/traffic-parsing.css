@@ -13,6 +13,28 @@
   margin: 8px 0 10px;
 }
 
+.tp-plc-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tp-address-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tp-address-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tp-plc-list > .mp-btn {
+  align-self: flex-start;
+}
+
 .tp-field {
   display: flex;
   flex-direction: column;
@@ -23,6 +45,11 @@
 .tp-field span {
   color: var(--mp-muted);
   font-size: 11.5px;
+}
+
+.tp-duration-hint {
+  color: var(--mp-muted);
+  font-size: 11px;
 }
 
 .tp-field input[type="text"],
