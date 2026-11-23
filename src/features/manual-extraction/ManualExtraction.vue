@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,6 +14,7 @@ import {
   Sparkles,
   Square,
   Upload,
+  X,
   XCircle,
 } from 'lucide-vue-next';
 import {
@@ -45,6 +46,7 @@ import DevicesTable from './DevicesTable.vue';
 import LogicTable from './LogicTable.vue';
 import TopologyTable from './TopologyTable.vue';
 import '@/styles/history.css';
+import '@/styles/quick-nav.css';
 import './manual-extraction.css';
 
 type Tab = 'devices' | 'topology' | 'logic' | 'raw';
@@ -77,6 +79,13 @@ const errorMessage = (error: unknown) => (error instanceof Error ? error.message
 
 const file = shallowRef<File | null>(null);
 const fileMeta = ref<FileMeta | null>(null);
+const uploadCard = ref<HTMLElement | null>(null);
+const extractCard = ref<HTMLElement | null>(null);
+const resultsSection = ref<HTMLElement | null>(null);
+const uploadCollapsed = ref(false);
+const extractCollapsed = ref(false);
+const resultsCollapsed = ref(false);
+const previewSegment = ref<ManualSegment | null>(null);
 const pages = ref<string[]>([]);
 const readState = ref<'idle' | 'reading' | 'ready' | 'error'>('idle');
 const readError = ref('');
@@ -96,6 +105,7 @@ const healthError = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
 const historyRuns = ref<ManualRunSummary[]>([]);
 const historyName = ref('');
+const historyOpen = ref(false);
 const historyLoading = ref(false);
 const historyOpening = ref(false);
 const historyError = ref('');
@@ -124,16 +134,50 @@ onMounted(() => {
       healthError.value = errorMessage(error);
     });
   void refreshHistory();
+  document.addEventListener('keydown', onGlobalKeydown);
 });
 
 onUnmounted(() => {
   healthController?.abort();
   abortController?.abort();
+  document.removeEventListener('keydown', onGlobalKeydown);
 });
 
 function formatHistoryTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
+
+async function scrollToSection(target: HTMLElement | null) {
+  await nextTick();
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function goUpload() {
+  uploadCollapsed.value = false;
+  void scrollToSection(uploadCard.value);
+}
+
+function goExtract() {
+  extractCollapsed.value = false;
+  void scrollToSection(extractCard.value);
+}
+
+function goResults() {
+  resultsCollapsed.value = false;
+  void scrollToSection(resultsSection.value);
+}
+
+function openSegment(segment: ManualSegment) {
+  previewSegment.value = segment;
+}
+
+function closeSegment() {
+  previewSegment.value = null;
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') previewSegment.value = null;
 }
 
 async function refreshHistory() {
@@ -211,6 +255,9 @@ async function openHistory(name: string) {
     tab.value = 'devices';
     runFinished.value = true;
     historyName.value = name;
+    historyOpen.value = false;
+    resultsCollapsed.value = false;
+    void scrollToSection(resultsSection.value);
   } catch (error) {
     historyError.value = errorMessage(error);
   } finally {
@@ -253,6 +300,7 @@ async function loadPdf(source: File) {
     };
     readState.value = 'ready';
     notice.value = '文档已就绪，点击「操作规范属性提取」生成业务逻辑。';
+    extractCollapsed.value = false;
   } catch (error) {
     pages.value = [];
     readState.value = 'error';
@@ -298,6 +346,7 @@ async function loadFile(next: File) {
     fileMeta.value = { name: next.name, size: next.size, kind: 'text', pageCount: 1 };
     readState.value = 'ready';
     notice.value = '文档已就绪，点击「操作规范属性提取」生成业务逻辑。';
+    extractCollapsed.value = false;
     if (!parts.length) warnings.value = ['文件中没有可抽取的文本。'];
   } catch (error) {
     readState.value = 'error';
@@ -338,6 +387,9 @@ function reset() {
   runFinished.value = false;
   historyName.value = '';
   historyError.value = '';
+  uploadCollapsed.value = false;
+  extractCollapsed.value = false;
+  resultsCollapsed.value = false;
   if (fileInput.value) fileInput.value.value = '';
 }
 
@@ -380,6 +432,7 @@ async function start(targets: ManualSegment[] = segments.value, mode: RunMode = 
   running.value = true;
   fatalError.value = '';
   notice.value = '';
+  extractCollapsed.value = false;
 
   if (mode === 'full') {
     const seeded = { ...runs.value };
@@ -405,12 +458,16 @@ async function start(targets: ManualSegment[] = segments.value, mode: RunMode = 
       notice.value = failedCount
         ? `操作规范属性提取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
         : '操作规范属性提取完成：操作对象与操作值域见「业务拓扑」「控制逻辑」表。';
+      resultsCollapsed.value = false;
+      void scrollToSection(resultsSection.value);
       void saveHistory(true);
       return;
     }
     notice.value = failedCount
       ? `抽取结束：${failedCount} 个分段失败，可单独重试；已成功的结果可继续复核。`
       : '抽取完成，可切换分段复核并导出结果。';
+    resultsCollapsed.value = false;
+    void scrollToSection(resultsSection.value);
     void saveHistory(false);
   } catch (error) {
     if (isAbort(error)) {
@@ -626,7 +683,7 @@ function rawLength(stage: ManualStage): number {
 
 <template>
   <div class="mp-app mp-embedded">
-    <main class="mp-main">
+    <main class="mp-main mp-has-quick-nav">
       <div class="mp-embedded-status">
         <span
           class="mp-chip"
@@ -649,12 +706,18 @@ function rawLength(stage: ManualStage): number {
       </div>
 
       <div class="mp-grid">
-        <section class="mp-card">
+        <section ref="uploadCard" class="mp-card">
           <div class="mp-card-head">
             <div><Upload :size="16" /><h2>上传操作规范</h2></div>
-            <button v-if="fileMeta" class="mp-text-btn" :disabled="running" @click="reset">更换文件</button>
+            <div class="mp-card-head-actions">
+              <button v-if="fileMeta" class="mp-text-btn" :disabled="running" @click="reset">更换文件</button>
+              <button class="mp-text-btn" type="button" @click="uploadCollapsed = !uploadCollapsed">
+                {{ uploadCollapsed ? '展开' : '收起' }}
+              </button>
+            </div>
           </div>
 
+          <div v-show="!uploadCollapsed">
           <input
             id="manual-file-input"
             ref="fileInput"
@@ -764,13 +827,21 @@ function rawLength(stage: ManualStage): number {
           </button>
 
           <p class="mp-footnote">PDF 在浏览器本地解析，文件不会上传到服务器；只有分段文本会发送给模型。</p>
+          </div>
         </section>
 
-        <section class="mp-card">
+        <section ref="extractCard" class="mp-card">
           <div class="mp-card-head">
             <div><Sparkles :size="16" /><h2>分段抽取</h2></div>
-            <span class="mp-muted">{{ segments.length ? `${segments.length} 个分段` : '等待文档' }}</span>
+            <div class="mp-card-head-actions">
+              <span class="mp-muted">{{ segments.length ? `${segments.length} 个分段` : '等待文档' }}</span>
+              <button class="mp-text-btn" type="button" @click="extractCollapsed = !extractCollapsed">
+                {{ extractCollapsed ? '展开' : '收起' }}
+              </button>
+            </div>
           </div>
+
+          <div v-show="!extractCollapsed">
 
           <div v-if="!health?.configured && !healthError" class="mp-hint">
             <AlertTriangle :size="14" />在项目根目录 <code>.env</code> 中写入
@@ -838,6 +909,13 @@ function rawLength(stage: ManualStage): number {
                 :key="segment.index"
                 class="mp-seg"
                 :class="runs[segment.index]?.status ?? 'pending'"
+                role="button"
+                tabindex="0"
+                title="点击查看分段原文"
+                :aria-label="`查看分段 ${segment.index} 的原文`"
+                @click="openSegment(segment)"
+                @keydown.enter="openSegment(segment)"
+                @keydown.space.prevent="openSegment(segment)"
               >
                 <span class="mp-seg-index mono">{{ String(segment.index).padStart(2, '0') }}</span>
                 <div class="mp-seg-main">
@@ -867,56 +945,11 @@ function rawLength(stage: ManualStage): number {
               </li>
             </ul>
           </template>
+          </div>
         </section>
       </div>
 
-      <section class="mp-card mp-history">
-        <div class="mp-card-head">
-          <div><History :size="16" /><h2>运行历史</h2></div>
-          <div class="mp-history-actions">
-            <span class="mp-muted">{{ historyRuns.length }} 次运行</span>
-            <button
-              class="mp-btn"
-              type="button"
-              :disabled="historyLoading || historyOpening"
-              @click="refreshHistory"
-            >
-              <RotateCcw :size="13" />{{ historyLoading ? '刷新中…' : '刷新' }}
-            </button>
-          </div>
-        </div>
-        <div v-if="historyError" class="mp-hint bad">
-          <XCircle :size="14" />{{ historyError }}
-        </div>
-        <div v-else-if="!historyRuns.length" class="mp-placeholder compact">
-          <History :size="22" />
-          <b>暂无历史运行</b>
-          <span>完成一次操作规范解析后，历史记录会出现在这里。</span>
-        </div>
-        <ul v-else class="mp-run-list">
-          <li v-for="item in historyRuns" :key="item.name" :class="{ active: historyName === item.name }">
-            <div class="mp-run-main">
-              <b>{{ item.source || item.name }}</b>
-              <small>
-                {{ formatHistoryTime(item.updatedAt || item.createdAt) }} ·
-                {{ item.segmentCount }} 段 · 设备 {{ item.deviceCount }} /
-                拓扑 {{ item.topologyCount }} / 逻辑 {{ item.logicCount }}
-                <template v-if="item.model"> · {{ item.model }}</template>
-              </small>
-            </div>
-            <button
-              class="mp-btn"
-              type="button"
-              :disabled="running || historyOpening"
-              @click="openHistory(item.name)"
-            >
-              {{ historyName === item.name ? '当前' : '查看' }}
-            </button>
-          </li>
-        </ul>
-      </section>
-
-      <section v-if="Object.keys(runs).length > 0" id="manual-results" class="mp-card mp-results">
+      <section v-if="Object.keys(runs).length > 0" ref="resultsSection" id="manual-results" class="mp-card mp-results">
         <div class="mp-card-head">
           <div><FileText :size="16" /><h2>抽取结果</h2></div>
           <div class="mp-result-actions">
@@ -934,9 +967,13 @@ function rawLength(stage: ManualStage): number {
             <button class="mp-btn" :disabled="!hasData" @click="exportMarkdown">
               <Download :size="14" />导出 Markdown
             </button>
+            <button class="mp-btn" type="button" @click="resultsCollapsed = !resultsCollapsed">
+              {{ resultsCollapsed ? '展开' : '收起' }}
+            </button>
           </div>
         </div>
 
+        <div v-show="!resultsCollapsed">
         <div class="mp-summary">
           <div><span>设备</span><b class="mono">{{ formatNumber(scope.devices) }}</b></div>
           <div><span>业务拓扑</span><b class="mono">{{ formatNumber(scope.topology) }}</b></div>
@@ -984,7 +1021,115 @@ function rawLength(stage: ManualStage): number {
             <span>分段 {{ item.index }}：{{ item.issues.join('；') }}</span>
           </p>
         </div>
+        </div>
       </section>
+
+      <aside class="mp-history-drawer" :class="{ open: historyOpen }">
+        <div class="mp-history-drawer-head">
+          <div class="mp-history-drawer-title">
+            <History :size="16" />
+            <h2>运行历史</h2>
+            <span class="mp-muted">{{ historyRuns.length }} 次</span>
+          </div>
+          <div class="mp-history-drawer-actions">
+            <button
+              class="mp-btn"
+              type="button"
+              :disabled="historyLoading || historyOpening"
+              @click="refreshHistory"
+            >
+              <RotateCcw :size="13" />{{ historyLoading ? '刷新中…' : '刷新' }}
+            </button>
+            <button
+              class="mp-history-drawer-close"
+              type="button"
+              aria-label="收起运行历史"
+              @click="historyOpen = false"
+            >
+              <X :size="16" />
+            </button>
+          </div>
+        </div>
+        <div class="mp-history-drawer-body">
+          <div v-if="historyError" class="mp-hint bad">
+            <XCircle :size="14" />{{ historyError }}
+          </div>
+          <div v-else-if="!historyRuns.length" class="mp-placeholder compact">
+            <History :size="22" />
+            <b>暂无历史运行</b>
+            <span>完成一次操作规范解析后，历史记录会出现在这里。</span>
+          </div>
+          <ul v-else class="mp-run-list">
+            <li v-for="item in historyRuns" :key="item.name" :class="{ active: historyName === item.name }">
+              <div class="mp-run-main">
+                <b>{{ item.source || item.name }}</b>
+                <small>
+                  {{ formatHistoryTime(item.updatedAt || item.createdAt) }} ·
+                  {{ item.segmentCount }} 段 · 设备 {{ item.deviceCount }} /
+                  拓扑 {{ item.topologyCount }} / 逻辑 {{ item.logicCount }}
+                  <template v-if="item.model"> · {{ item.model }}</template>
+                </small>
+              </div>
+              <button
+                class="mp-btn"
+                type="button"
+                :disabled="running || historyOpening"
+                @click="openHistory(item.name)"
+              >
+                {{ historyName === item.name ? '当前' : '查看' }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </aside>
+
+      <div v-if="historyOpen" class="mp-history-backdrop" @click="historyOpen = false" />
+      <button
+        v-if="!historyOpen"
+        class="mp-history-toggle"
+        type="button"
+        aria-label="展开运行历史"
+        @click="historyOpen = true"
+      >
+        <History :size="16" />
+        <span>运行历史</span>
+        <em v-if="historyRuns.length">{{ historyRuns.length }}</em>
+      </button>
+
+      <nav class="mp-quick-nav" aria-label="页面导航">
+        <button type="button" title="上传操作规范" @click="goUpload">上传</button>
+        <button type="button" title="分段抽取" @click="goExtract">抽取</button>
+        <button v-if="Object.keys(runs).length" type="button" title="抽取结果" @click="goResults">结果</button>
+        <button type="button" title="运行历史" @click="historyOpen = true">历史</button>
+      </nav>
+
+      <Teleport to="body">
+        <div v-if="previewSegment" class="mp-modal-backdrop" @click.self="closeSegment">
+          <div
+            class="mp-modal"
+            role="dialog"
+            aria-modal="true"
+            :aria-label="`分段 ${previewSegment.index} 原文`"
+          >
+            <div class="mp-modal-head">
+              <div>
+                <b>分段 {{ previewSegment.index }}</b>
+                <small>
+                  第 {{ previewSegment.pageStart }}–{{ previewSegment.pageEnd }} 页 ·
+                  {{ formatNumber(previewSegment.chars) }} 字
+                </small>
+              </div>
+              <button class="mp-modal-close" type="button" aria-label="关闭" @click="closeSegment">
+                <X :size="16" />
+              </button>
+            </div>
+            <div class="mp-modal-body">
+              <pre>{{ previewSegment.text }}</pre>
+            </div>
+            <div class="mp-modal-foot">该段原文将按当前分段口径发送给模型。</div>
+          </div>
+        </div>
+      </Teleport>
     </main>
   </div>
 </template>
