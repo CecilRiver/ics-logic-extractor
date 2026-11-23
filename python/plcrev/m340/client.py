@@ -82,7 +82,10 @@ class PlcReader:
         body = self._recv_exact(length - 1)
         if not body or body[0] != FUNC_UMAS:
             raise UmasError(f"应答不是 UMAS：{body[:8].hex()}")
-        if len(body) > 2 and body[2] != STATUS_OK:
+        # 部分 M340 固件对 0x10 会话请求返回 0xFD，但第 4 字节仍是有效会话号，
+        # 后续 0x33/0x34/0x35 均正常；会话应答不做 0xFE 状态校验。
+        is_session_request = len(payload) > 2 and payload[2] == 0x10
+        if not is_session_request and len(body) > 2 and body[2] != STATUS_OK:
             raise UmasError(f"设备返回错误状态 0x{body[2]:02X}")
         return body
 
