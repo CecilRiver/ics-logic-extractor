@@ -573,6 +573,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
         if name.endswith(".st"):
             os.remove(os.path.join(out_dir, name))
     written = stsource.write_all(sources, out_dir)
+    st_files = [os.path.basename(path) for path in written]
 
     raw_plcs = manifest.get("plcs")
     if isinstance(raw_plcs, list) and raw_plcs:
@@ -593,6 +594,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "streamOffset": f"0x{source.stream_offset:05X}",
             "text": source.text,
             "plc": plcs[0] if plcs else "",
+            "file": st_files[index - 1],
         })
 
     # 两台 M251 的主程序源码，按 PLC 地址位置对应展示。
@@ -617,6 +619,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "streamOffset": "",
             "text": text,
             "plc": plc_address,
+            "file": filename,
         })
 
     manifest["parsed"] = True
@@ -628,6 +631,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "chars": unit["chars"],
             "declared": unit["declared"],
             "plc": unit["plc"],
+            "file": unit["file"],
         }
         for unit in units
     ]
@@ -735,6 +739,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         with open(os.path.join(tmp_dir, "01_上载", "Station.apx"), "wb") as fh:
             fh.write(image)
         written = stsource.write_all(sources, os.path.join(tmp_dir, "02_逆向"))
+        st_files = [os.path.basename(path) for path in written]
+        for index, unit in enumerate(units):
+            unit["plc"] = ip
+            unit["file"] = st_files[index]
 
         stu_name = None
         if args.stu and os.path.exists(args.stu):
@@ -759,7 +767,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             "parsed": True,
             "files": [os.path.basename(p) for p in written],
             "units": [
-                {"name": u["name"], "kind": u["kind"], "chars": u["chars"], "declared": u["declared"]}
+                {
+                    "name": u["name"],
+                    "kind": u["kind"],
+                    "chars": u["chars"],
+                    "declared": u["declared"],
+                    "plc": u["plc"],
+                    "file": u["file"],
+                }
                 for u in units
             ],
         }

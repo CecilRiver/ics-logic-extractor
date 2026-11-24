@@ -20,6 +20,7 @@ const pythonDir = resolve(repoRoot, 'python');
 const runnerPath = resolve(pythonDir, 'plc_runner.py');
 const dataRoot = resolve(repoRoot, 'data', 'traffic');
 const incomingRoot = resolve(dataRoot, '.incoming');
+const physicalModelPath = resolve(pythonDir, 'reference', 'physical-model-parameters.json');
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const JOB_TIMEOUT_MS = 180_000;
@@ -36,6 +37,7 @@ export interface TrafficUnit {
   streamOffset: string;
   text: string;
   plc?: string;
+  file?: string;
 }
 
 export interface TrafficResult {
@@ -61,6 +63,8 @@ export interface TrafficVariable {
   category: string;
   range: string;
   basis: string;
+  inferred?: boolean;
+  quality?: number;
 }
 
 interface TrafficJob {
@@ -294,10 +298,9 @@ async function cleanupIncoming(job: TrafficJob): Promise<void> {
   await rm(path, { force: true }).catch(() => undefined);
 }
 
-function runVariablesForDir(runDir: string): Promise<TrafficVariable[]> {
-  const { command, args, env } = pythonArgs(['variables', '--run-dir', runDir]);
-
-  return new Promise<TrafficVariable[]>((resolvePromise, reject) => {
+async function runVariablesForDir(runDir: string): Promise<TrafficVariable[]> {
+  const variables = await new Promise<TrafficVariable[]>((resolvePromise, reject) => {
+    const { command, args, env } = pythonArgs(['variables', '--run-dir', runDir]);
     const child = spawn(command, args, { cwd: pythonDir, env, windowsHide: true });
     let stdout = '';
     let stderr = '';
@@ -345,6 +348,7 @@ function runVariablesForDir(runDir: string): Promise<TrafficVariable[]> {
       }
     });
   });
+  return mergePhysicalModelVariables(variables);
 }
 
 function runParse(runDir: string): Promise<Record<string, unknown>> {
@@ -549,12 +553,131 @@ async function readManifest(dir: string): Promise<Record<string, unknown> | null
   }
 }
 
+const DATE_KEYS = new Set([
+  'generated_at', 'generatedAt', 'created_at', 'createdAt',
+  'updated_at', 'updatedAt', 'timestamp', 'date', 'time',
+]);
+
+function stripDateFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripDateFields);
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (DATE_KEYS.has(key)) continue;
+    out[key] = stripDateFields(child);
+  }
+  return out;
+}
+
+async function readPhysicalModel(): Promise<Record<string, unknown> | null> {
+  try {
+    const value = JSON.parse(await readFile(physicalModelPath, 'utf8')) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return stripDateFields(value) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+const MODEL_SECTIONS = [
+  'init_params',
+  'internal_defaults',
+  'optional_init',
+  'nominal',
+  'parameters',
+  'nominal_valves',
+  'equipment_constants',
+];
+
+const MODEL_SECTION_QUALITY: Record<string, number> = {
+  parameters: 90,
+  init_params: 88,
+  internal_defaults: 82,
+  nominal: 78,
+  nominal_valves: 74,
+  equipment_constants: 68,
+  optional_init: 60,
+};
+
+function flattenModelValues(value: unknown, prefix: string, out: Array<{ path: string; value: unknown }>): void {  if (Array.isArray(value) || value === null || typeof value !== 'object') {
+    out.push({ path: prefix, value });
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    flattenModelValues(child, prefix ? `${prefix}.${key}` : key, out);
+  }
+}
+
+function modelValueType(path: string, value: unknown): string {
+  if (typeof value === 'boolean') return 'BOOL';
+  if (typeof value === 'number') {
+    return /(^|\.)(history_len|count|random_seed)$/.test(path) ? 'INT' : 'REAL';
+  }
+  if (Array.isArray(value)) return 'ARRAY[REAL]';
+  if (typeof value === 'string') return 'STRING';
+  return '未知';
+}
+
+function modelValueRange(value: unknown): string {
+  if (value === null) return '未设置';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number') return `固定值 ${value}`;
+  if (typeof value === 'string') return `固定值 ${value}`;
+  if (Array.isArray(value)) return `固定值 [${value.map((item) => String(item)).join(', ')}]`;
+  return '未设置';
+}
+
+async function physicalModelVariables(): Promise<TrafficVariable[]> {
+  const data = await readPhysicalModel();
+  const systems = data && data.systems && typeof data.systems === 'object' && !Array.isArray(data.systems)
+    ? data.systems as Record<string, unknown>
+    : {};
+  const rows: TrafficVariable[] = [];
+  for (const [systemKey, rawSystem] of Object.entries(systems)) {
+    if (!rawSystem || typeof rawSystem !== 'object' || Array.isArray(rawSystem)) continue;
+    const system = rawSystem as Record<string, unknown>;
+    const displayName = typeof system.display_name === 'string' ? system.display_name : systemKey;
+    const unit = `物理模型 · ${displayName}`;
+    for (const section of MODEL_SECTIONS) {
+      const rawSection = system[section];
+      if (!rawSection || typeof rawSection !== 'object') continue;
+      const items: Array<{ path: string; value: unknown }> = [];
+      flattenModelValues(rawSection, section, items);
+      for (const item of items) {
+        if (item.value === null || item.value === undefined) continue;
+        rows.push({
+          unit,
+          name: item.path,
+          type: modelValueType(item.path, item.value),
+          category: '模型参数',
+          range: modelValueRange(item.value),
+          basis: `模型定义：systems.${systemKey}.${item.path}`,
+          inferred: false,
+          quality: MODEL_SECTION_QUALITY[section] ?? 70,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+async function mergePhysicalModelVariables(variables: TrafficVariable[]): Promise<TrafficVariable[]> {
+  const modelRows = await physicalModelVariables();
+  if (!modelRows.length) return variables;
+  return [
+    ...variables.filter((row) => row.category !== '模型参数'),
+    ...modelRows,
+  ];
+}
+
 async function readRunVariables(dir: string): Promise<TrafficVariable[] | null> {
   try {
     const value = JSON.parse(await readFile(join(dir, '03_变量', '变量表.json'), 'utf8')) as {
       variables?: unknown;
     };
-    return Array.isArray(value.variables) ? (value.variables as TrafficVariable[]) : null;
+    return Array.isArray(value.variables)
+      ? await mergePhysicalModelVariables(value.variables as TrafficVariable[])
+      : null;
   } catch {
     return null;
   }
@@ -632,22 +755,47 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
   const meta = Array.isArray(manifest.units)
     ? (manifest.units as Array<Record<string, unknown>>)
     : [];
+  const isParsed = Boolean(manifest.parsed) || files.length > 0;
   const units: TrafficUnit[] = [];
-  for (let i = 0; i < files.length; i += 1) {
-    const text = await readFile(join(sourceDir, files[i]), 'utf8').catch(() => '');
-    const info = meta[i] ?? {};
-    const offset = files[i].match(/0x([0-9A-Fa-f]+)/)?.[1];
-    units.push({
-      index: i + 1,
-      name: String(info.name ?? (offset ? `单元 ${offset}` : `单元 ${i + 1}`)),
-      kind: String(info.kind ?? '功能块'),
-      chars: text.length,
-      status: '解析成功',
-      declared: Boolean(info.declared),
-      streamOffset: offset ? `0x${offset}` : '',
-      text,
-      plc: info.plc ? String(info.plc) : '',
-    });
+  const hasFileMeta = meta.length > 0
+    && meta.every((info) => typeof info.file === 'string' && info.file);
+  if (hasFileMeta) {
+    for (let i = 0; i < meta.length; i += 1) {
+      const info = meta[i];
+      const file = String(info.file);
+      const text = await readFile(join(sourceDir, file), 'utf8').catch(() => '');
+      const offset = file.match(/0x([0-9A-Fa-f]+)/)?.[1];
+      units.push({
+        index: i + 1,
+        name: String(info.name ?? (offset ? `单元 ${offset}` : `单元 ${i + 1}`)),
+        kind: String(info.kind ?? '功能块'),
+        chars: text.length,
+        status: '解析成功',
+        declared: Boolean(info.declared),
+        streamOffset: offset ? `0x${offset}` : '',
+        text,
+        plc: info.plc ? String(info.plc) : '',
+        file,
+      });
+    }
+  } else {
+    for (let i = 0; i < files.length; i += 1) {
+      const text = await readFile(join(sourceDir, files[i]), 'utf8').catch(() => '');
+      const info = meta[i] ?? {};
+      const offset = files[i].match(/0x([0-9A-Fa-f]+)/)?.[1];
+      units.push({
+        index: i + 1,
+        name: String(info.name ?? (offset ? `单元 ${offset}` : `单元 ${i + 1}`)),
+        kind: String(info.kind ?? '功能块'),
+        chars: text.length,
+        status: '解析成功',
+        declared: Boolean(info.declared),
+        streamOffset: offset ? `0x${offset}` : '',
+        text,
+        plc: info.plc ? String(info.plc) : '',
+        file: files[i],
+      });
+    }
   }
 
   let traffic: TrafficResult['traffic'] = null;
@@ -683,7 +831,7 @@ async function loadRun(name: string): Promise<TrafficRunDetail | null> {
     stu: manifest.stu ? String(manifest.stu) : null,
     runDir: dir,
     units,
-    parsed: Boolean(manifest.parsed) || files.length > 0,
+    parsed: isParsed,
     traffic,
   };
 

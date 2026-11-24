@@ -16,6 +16,7 @@
 | `plcrev/m340/pou.py` | 声明 + 代码体拼成完整 POU |
 | `plcrev/m340/variables.py` | 关键变量与值域推断 |
 | `reference/m251/` | 两台 M251 的主程序源码 |
+| `reference/physical-model-parameters.json` | 物理模型超参数快照，服务端合并为「模型参数」类别的变量行（不展示生成日期） |
 
 手工运行：
 

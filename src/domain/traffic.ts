@@ -8,6 +8,7 @@ export interface TrafficUnit {
   streamOffset: string;
   text: string;
   plc?: string;
+  file?: string;
 }
 
 export type TrafficCategory = 'upload' | 'runtime' | 'io';
@@ -85,6 +86,7 @@ export interface TrafficVariable {
   range: string;
   basis: string;
   inferred?: boolean;
+  quality?: number;
 }
 
 export type TrafficJobStatus = 'running' | 'done' | 'error';
@@ -152,6 +154,11 @@ export interface TrafficRunDetail {
 
 /** 质量分：值域、类型、类别、依据四项，缺项或推断项扣分。 */
 export function variableQuality(row: TrafficVariable): TrafficQuality {
+  if (typeof row.quality === 'number' && Number.isFinite(row.quality)) {
+    const score = Math.max(0, Math.min(100, Math.round(row.quality)));
+    return { score, level: score >= 80 ? '高' : score >= 60 ? '中' : '低' };
+  }
+
   let score = 100;
 
   const range = (row.range ?? '').trim();

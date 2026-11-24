@@ -72,6 +72,10 @@ describe('traffic quality scoring', () => {
       withRange: 1,
     });
   });
+
+  it('uses an explicit quality score when provided', () => {
+    expect(variableQuality({ ...variables[0], quality: 74 })).toEqual({ score: 74, level: '中' });
+  });
 });
 
 describe('traffic exports', () => {

@@ -1003,6 +1003,7 @@ onUnmounted(stopPolling);
               <option value="REAL">REAL</option>
               <option value="INT">INT</option>
               <option value="实例">实例</option>
+              <option value="ARRAY[REAL]">ARRAY[REAL]</option>
               <option value="未知">未知</option>
             </select>
             <select v-model="varCategoryFilter" aria-label="类别筛选">
@@ -1010,6 +1011,7 @@ onUnmounted(stopPolling);
               <option value="输入">输入</option>
               <option value="输出">输出</option>
               <option value="内部">内部</option>
+              <option value="模型参数">模型参数</option>
               <option value="未知">未知</option>
             </select>
             <select v-model="varQualityFilter" aria-label="质量筛选">

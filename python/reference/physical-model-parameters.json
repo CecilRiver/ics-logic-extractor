@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "description": "VeriPro 物理模型参数快照。数值取自代码中的默认值，不是运行时配置。",
+  "systems": {
+    "boiler_ccs": {
+      "display_name": "Boiler CCS",
+      "model_type": "灰箱一阶动态模型（围绕额定工况点弱耦合）",
+      "source_files": [
+        "simulators/boiler_ccs/physical_process.py",
+        "simulators/boiler_ccs/system_manifest.json"
+      ],
+      "state_variables": [
+        "true_load",
+        "coal_flow",
+        "feedwater_flow",
+        "main_steam_flow",
+        "waterwall_temp",
+        "main_steam_pressure"
+      ],
+      "control_inputs": [
+        "fuel_command_0_applied",
+        "water_pump_speed_0_applied"
+      ],
+      "init_params": {
+        "Ts": 0.1
+      },
+      "internal_defaults": {
+        "history_len": 64
+      },
+      "external_overrides": {
+        "supported": ["Ts"],
+        "source": "system_manifest.json -> physical_process.init_params"
+      },
+      "nominal": {
+        "true_load": 349.0,
+        "coal_flow": 157.4,
+        "feedwater_flow": 1065.7,
+        "main_steam_flow": 1064.0,
+        "waterwall_temp": 425.0,
+        "main_steam_pressure": 23.7,
+        "fuel_command": 157.6,
+        "water_pump_speed": 2500.0
+      },
+      "parameters": {
+        "tau_coal": 2.0,
+        "tau_feedwater": 0.3,
+        "tau_steam_flow": 3.8,
+        "tau_load": 4.5,
+        "pump_to_feedwater_gain": 0.8,
+        "coal_to_steam_gain": 3.5,
+        "feedwater_to_steam_gain": 0.11,
+        "pressure_restore": 0.28,
+        "pressure_from_coal": 0.048,
+        "pressure_from_steam": 0.0072,
+        "pressure_from_feedwater": 0.02,
+        "temp_restore": 0.1,
+        "temp_from_coal": 0.104,
+        "temp_from_feedwater": 0.0034,
+        "temp_from_steam": 0.003,
+        "load_from_steam": 0.24,
+        "load_from_pressure": 6.2
+      },
+      "notes": [
+        "parameters 与 nominal 硬编码在模块级常量中，无标定或拟合流程。",
+        "PhysicalProcess.__init__ 仅接受 Ts 与 init_state，params 只能在构造后修改实例属性。"
+      ]
+    },
+    "tennessee_eastman": {
+      "display_name": "Tennessee Eastman Process",
+      "model_type": "Downs & Vogel 机理模型（Fortran 实现的 Python 移植）",
+      "source_files": [
+        "simulators/tennessee_eastman/physical_process.py",
+        "simulators/tennessee_eastman/tep/constants.py",
+        "simulators/tennessee_eastman/system_manifest.json"
+      ],
+      "state_variables": {
+        "count": 53,
+        "measurements": "xmeas_01..xmeas_41",
+        "valves": "xmv_01..xmv_12"
+      },
+      "control_inputs": {
+        "count": 12,
+        "keys": "xmv_01_applied..xmv_12_applied",
+        "range": [0.0, 100.0]
+      },
+      "init_params": {
+        "Ts": 1.0
+      },
+      "optional_init": {
+        "random_seed": null,
+        "idv": {}
+      },
+      "external_overrides": {
+        "supported": ["Ts"],
+        "source": "system_manifest.json -> physical_process.init_params"
+      },
+      "nominal_valves": {
+        "xmv_01": 63.05263039,
+        "xmv_02": 53.97970677,
+        "xmv_03": 24.64355755,
+        "xmv_04": 61.30192144,
+        "xmv_05": 22.21,
+        "xmv_06": 40.06374673,
+        "xmv_07": 38.1003437,
+        "xmv_08": 46.53415582,
+        "xmv_09": 47.44573456,
+        "xmv_10": 41.10581288,
+        "xmv_11": 18.11349055,
+        "xmv_12": 50.0
+      },
+      "equipment_constants": {
+        "VTR": 1300.0,
+        "VTS": 3500.0,
+        "VTC": 156.5,
+        "VTV": 5000.0,
+        "HWR": 7060.0,
+        "HWS": 11138.0,
+        "RG": 998.9,
+        "CPFLMX": 280275.0,
+        "CPPRMX": 1.3,
+        "VST_DEFAULT": 2.0,
+        "VTAU_SECONDS": [8.0, 8.0, 6.0, 9.0, 7.0, 5.0, 5.0, 5.0, 120.0, 5.0, 5.0, 5.0]
+      },
+      "notes": [
+        "物性、动力学与设备常数来自原 Fortran 实现，属于模型定义而非可调超参数。",
+        "仅 Ts（及其别名 dt）、random_seed、idv 在构造时可配置。"
+      ]
+    }
+  }
+}
