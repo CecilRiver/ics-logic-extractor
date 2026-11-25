@@ -18,6 +18,7 @@ import {
   summarizeQuality,
   variableQuality,
   type TrafficCategory,
+  type TrafficFrame,
   type TrafficJobView,
   type TrafficResult,
   type TrafficRunSummary,
@@ -91,8 +92,9 @@ const varHasRange = ref(false);
 const varPage = ref(1);
 const varPageSize = ref(20);
 
-const parsing = ref(false);
-const parseError = ref('');
+const reversing = ref(false);
+const extracting = ref(false);
+const reverseError = ref('');
 const trafficCategory = ref<'all' | TrafficCategory>('all');
 const trafficDirection = ref<'all' | 'request' | 'response'>('all');
 const trafficSearch = ref('');
@@ -157,10 +159,15 @@ function addPlcAddress() {
 function removePlcAddress(index: number) {
   if (index > 0) plcAddresses.value.splice(index, 1);
 }
-const canCollect = computed(() => !starting.value && !isRunning.value && !parsing.value);
-const canParse = computed(() =>
+const busy = computed(() => reversing.value || extracting.value);
+const canCollect = computed(() => !starting.value && !isRunning.value && !busy.value);
+const canReverse = computed(() =>
   Boolean(result.value) && Boolean(currentRunName.value)
-  && !parsing.value && !isRunning.value && !starting.value,
+  && !busy.value && !isRunning.value && !starting.value,
+);
+const canExtract = computed(() =>
+  parsed.value && Boolean(currentRunName.value)
+  && !busy.value && !isRunning.value && !starting.value,
 );
 const variablesEmpty = computed(() => variables.value !== null && variables.value.length === 0);
 
@@ -263,12 +270,49 @@ const filteredFrames = computed(() => {
     if (trafficCategory.value !== 'all' && frame.category !== trafficCategory.value) return false;
     if (trafficDirection.value !== 'all' && frame.direction !== trafficDirection.value) return false;
     if (!keyword) return true;
-    return [frame.function, frame.summary, frame.protocol, frame.time]
+    return [
+      frame.protocol, frame.function, frame.functionCode, frame.subfunction,
+      frame.summary, frame.source, frame.destination, frame.status, frame.session,
+      frame.recordIndex, frame.address, frame.tid, frame.time,
+      ...(frame.segments ?? []).map((segment) => segment.name),
+    ]
       .join(' ')
       .toLowerCase()
       .includes(keyword);
   });
 });
+
+function frameSegmentLabel(frame: TrafficFrame): string {
+  const names = (frame.segments ?? []).map((segment) => segment.name);
+  return names.length ? names.join(' · ') : '—';
+}
+
+function frameProperties(frame: TrafficFrame): Array<{ label: string; value: string }> {
+  const items: Array<{ label: string; value: string }> = [];
+  const add = (label: string, value: unknown) => {
+    if (value === null || value === undefined || value === '') return;
+    items.push({ label, value: String(value) });
+  };
+  add('源地址', frame.source);
+  add('目的地址', frame.destination);
+  add('事务号 TID', frame.tid);
+  add('Unit ID', frame.unitId);
+  add('MBAP 长度', frame.mbapLength == null ? undefined : `${frame.mbapLength} 字节`);
+  add('功能码', frame.functionCode ?? frame.function);
+  add('子功能', frame.subfunction);
+  add('状态', frame.status);
+  add('会话号', frame.session);
+  add('记录序号', frame.recordIndex);
+  add('起始地址', frame.startAddress);
+  add('读取数量', frame.quantity);
+  add('字节数', frame.byteCount == null ? undefined : `${frame.byteCount} 字节`);
+  if (frame.dataLength !== frame.byteCount) {
+    add('数据长度', frame.dataLength == null ? undefined : `${frame.dataLength} 字节`);
+  }
+  add('总长度', frame.totalBytes == null ? undefined : `${frame.totalBytes} 字节`);
+  add('异常码', frame.exception);
+  return items;
+}
 
 const distribution = computed(() => {
   const stats = trafficStats.value;
@@ -314,14 +358,17 @@ function runLabel(name: string): string {
   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]} · ${match[7]}`;
 }
 
-async function scrollToSection(target: HTMLElement | null) {
+type SectionTarget = HTMLElement | null | (() => HTMLElement | null);
+
+async function scrollToSection(target: SectionTarget) {
   await nextTick();
-  target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const element = typeof target === 'function' ? target() : target;
+  element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function goTop() {
   networkCollapsed.value = false;
-  void scrollToSection(topSection.value);
+  void scrollToSection(() => topSection.value);
 }
 
 function toggleNetwork() {
@@ -334,12 +381,12 @@ function toggleProgress() {
 
 function goTraffic() {
   trafficCollapsed.value = false;
-  void scrollToSection(trafficSection.value);
+  void scrollToSection(() => trafficSection.value);
 }
 
 function goUnits() {
   unitsCollapsed.value = false;
-  void scrollToSection(unitsSection.value);
+  void scrollToSection(() => unitsSection.value);
 }
 
 function stopPolling() {
@@ -376,7 +423,7 @@ function clearCurrentRun() {
   job.value = null;
   variables.value = null;
   variablesError.value = '';
-  parseError.value = '';
+  reverseError.value = '';
   expanded.value = [];
   expandedFrames.value = [];
   deleteTarget.value = '';
@@ -385,7 +432,7 @@ function clearCurrentRun() {
 }
 
 async function removeRun(name: string) {
-  if (deleting.value || isRunning.value || parsing.value) return;
+  if (deleting.value || isRunning.value || busy.value) return;
   const wasCurrent = currentRunName.value === name;
   deleting.value = true;
   runsError.value = '';
@@ -402,11 +449,11 @@ async function removeRun(name: string) {
 }
 
 async function openRun(name: string) {
-  if (isRunning.value || starting.value || parsing.value) return;
+  if (isRunning.value || starting.value || busy.value) return;
   stopPolling();
   starting.value = true;
   errorMessage.value = '';
-  parseError.value = '';
+  reverseError.value = '';
   variablesError.value = '';
   try {
     const detail = await loadTrafficRun(name);
@@ -436,9 +483,9 @@ async function openRun(name: string) {
     while (loadedPlcs.length > 1 && !loadedPlcs[loadedPlcs.length - 1]) loadedPlcs.pop();
     plcAddresses.value = loadedPlcs;
     if (detail.result.traffic && !detail.result.parsed) {
-      void scrollToSection(trafficSection.value);
+      void scrollToSection(() => trafficSection.value);
     } else if (detail.result.parsed) {
-      void scrollToSection(unitsSection.value);
+      void scrollToSection(() => unitsSection.value);
     }
     historyOpen.value = false;
   } catch (error) {
@@ -460,7 +507,7 @@ async function poll(id: string) {
       pollTimer = null;
       if (view.status === 'done') {
         void refreshRuns();
-        if (!view.result?.parsed) void scrollToSection(trafficSection.value);
+        if (!view.result?.parsed) void scrollToSection(() => trafficSection.value);
       }
     }
   } catch (error) {
@@ -483,7 +530,7 @@ async function collect() {
   stopPolling();
   starting.value = true;
   errorMessage.value = '';
-  parseError.value = '';
+  reverseError.value = '';
   variablesError.value = '';
   variables.value = null;
   expanded.value = [];
@@ -521,10 +568,10 @@ async function collect() {
   }
 }
 
-async function parse() {
-  if (!canParse.value || !result.value || !currentRunName.value) return;
-  parsing.value = true;
-  parseError.value = '';
+async function reverse() {
+  if (!canReverse.value || !result.value || !currentRunName.value) return;
+  reversing.value = true;
+  reverseError.value = '';
   variablesError.value = '';
   variables.value = null;
   try {
@@ -536,7 +583,7 @@ async function parse() {
       status: 'done',
       stage: 'done',
       percent: 100,
-      message: `离线解析完成：${parsedUnits.length} 个单元`,
+      message: `源码逆向完成：${parsedUnits.length} 个单元`,
       result: {
         ...result.value,
         ...parsedFields,
@@ -549,25 +596,36 @@ async function parse() {
     resetFilters();
     unitsCollapsed.value = false;
     progressCollapsed.value = false;
-    void scrollToSection(unitsSection.value);
-
-    try {
-      variables.value = normalizeVariables(await extractRunVariables(currentRunName.value));
-      resetFilters();
-      if (variables.value) {
-        job.value = {
-          ...job.value,
-          message: `解析完成：${parsedUnits.length} 个单元 / ${variables.value.length} 个变量`,
-        };
-      }
-    } catch (error) {
-      variablesError.value = `关键变量提取失败：${errorText(error)}；可点击「重新解析」重试。`;
-    }
+    void scrollToSection(() => unitsSection.value);
     await refreshRuns();
   } catch (error) {
-    parseError.value = errorText(error);
+    reverseError.value = errorText(error);
   } finally {
-    parsing.value = false;
+    reversing.value = false;
+  }
+}
+
+async function extract() {
+  if (!canExtract.value || !result.value || !currentRunName.value) return;
+  extracting.value = true;
+  variablesError.value = '';
+  try {
+    variables.value = normalizeVariables(await extractRunVariables(currentRunName.value));
+    resetFilters();
+    unitsCollapsed.value = false;
+    progressCollapsed.value = false;
+    if (job.value) {
+      job.value = {
+        ...job.value,
+        message: `变量解析完成：${variables.value.length} 个变量`,
+      };
+    }
+    void scrollToSection(() => unitsSection.value);
+    await refreshRuns();
+  } catch (error) {
+    variablesError.value = `变量解析失败：${errorText(error)}；可点击「解析变量与值域」重试。`;
+  } finally {
+    extracting.value = false;
   }
 }
 
@@ -688,7 +746,7 @@ onUnmounted(stopPolling);
           填写多个 PLC 地址时，将一并采集运行 / IO 流量并解析控制程序。
         </p>
         <p class="tp-note">
-          先收集上载、运行与 IO 流量并保存 PCAPNG，再在流量区点击「开始解析」离线解析控制程序。
+          先收集上载、运行与 IO 流量并保存 PCAPNG，再依次点击「逆向源码」和「解析变量与值域」。
         </p>
         </div>
       </section>
@@ -700,21 +758,23 @@ onUnmounted(stopPolling);
             <span
               v-if="job"
               class="mp-chip"
-              :class="job.status === 'error' ? 'bad' : isRunning || parsing ? 'warn' : 'ok'"
+              :class="job.status === 'error' ? 'bad' : isRunning || busy ? 'warn' : 'ok'"
             >
               <XCircle v-if="job.status === 'error'" :size="13" />
-              <LoaderCircle v-else-if="isRunning || parsing" :size="13" class="mp-spin" />
+              <LoaderCircle v-else-if="isRunning || busy" :size="13" class="mp-spin" />
               <CheckCircle2 v-else :size="13" />
               {{
                 job.status === 'error'
                   ? '采集失败'
                   : isRunning
                     ? '采集中'
-                    : parsing
-                      ? '解析中'
-                      : parsed
-                        ? '解析成功'
-                        : '采集完成'
+                    : reversing
+                      ? '逆向中'
+                      : extracting
+                        ? '提取中'
+                        : parsed
+                          ? (variables ? '解析完成' : '逆向完成')
+                          : '采集完成'
               }}
             </span>
             <button class="mp-btn" type="button" @click.stop="toggleProgress">
@@ -739,7 +799,8 @@ onUnmounted(stopPolling);
             <div class="mp-bar"><i :style="{ width: `${progressPercent}%` }" /></div>
           </div>
           <div v-if="job.message" class="tp-progress-message">{{ job.message }}</div>
-          <div v-if="parsing" class="tp-progress-message">正在解析控制程序并提取关键变量…</div>
+          <div v-if="reversing" class="tp-progress-message">正在逆向控制程序源码…</div>
+          <div v-if="extracting" class="tp-progress-message">正在提取关键变量、值域与物理模型参数…</div>
 
           <div v-for="warning in job.warnings" :key="warning" class="mp-hint">
             <AlertTriangle :size="14" />{{ warning }}
@@ -747,8 +808,8 @@ onUnmounted(stopPolling);
           <div v-if="job.error" class="mp-hint bad">
             <XCircle :size="14" />{{ job.error }}
           </div>
-          <div v-if="parseError" class="mp-hint bad">
-            <XCircle :size="14" />解析失败：{{ parseError }}
+          <div v-if="reverseError" class="mp-hint bad">
+            <XCircle :size="14" />逆向失败：{{ reverseError }}
           </div>
         </template>
 
@@ -774,7 +835,7 @@ onUnmounted(stopPolling);
         </div>
         <div v-else-if="traffic" class="mp-inline-state">
           <CheckCircle2 :size="14" />
-          已完成流量采集：{{ trafficStats.frames }} 帧 / {{ formatBytes(trafficStats.bytes) }}，在下方流量区点击「开始解析」。
+          已完成流量采集：{{ trafficStats.frames }} 帧 / {{ formatBytes(trafficStats.bytes) }}，在下方流量区点击「逆向源码」。
         </div>
         </div>
       </section>
@@ -788,9 +849,15 @@ onUnmounted(stopPolling);
             当前运行 <code>{{ runLabel(currentRunName) }}</code>
             <span class="mp-muted">{{ plcLabel(currentPlcs) }}</span>
           </span>
-          <button class="mp-btn primary" type="button" :disabled="!canParse" @click="parse">
-            <LoaderCircle v-if="parsing" :size="15" class="mp-spin" />
-            <Play v-else :size="15" fill="currentColor" />{{ parsing ? '解析中…' : parsed ? '重新解析' : '开始解析' }}
+          <button
+            class="mp-btn primary"
+            type="button"
+            :disabled="!canReverse"
+            title="离线逆向控制程序源码"
+            @click="reverse"
+          >
+            <LoaderCircle v-if="reversing" :size="15" class="mp-spin" />
+            <FileText v-else :size="15" />{{ reversing ? '逆向中…' : parsed ? '重新逆向' : '逆向源码' }}
           </button>
           <a v-if="downloadUrl" class="mp-btn" :href="downloadUrl" download>下载 PCAPNG</a>
           <button class="mp-btn" type="button" @click="trafficCollapsed = !trafficCollapsed">
@@ -843,34 +910,60 @@ onUnmounted(stopPolling);
           <option value="request">请求</option>
           <option value="response">响应</option>
         </select>
-        <input v-model="trafficSearch" type="text" placeholder="搜索功能 / 摘要 / 协议…" />
-        <span class="mp-muted">显示 {{ filteredFrames.length }} / {{ frames.length }}</span>
+        <input v-model="trafficSearch" type="text" placeholder="搜索功能 / 摘要 / 协议 / 功能段…" />
+        <span class="mp-muted">显示 {{ filteredFrames.length }} / {{ frames.length }} · 点击行查看属性</span>
       </div>
 
       <div class="mp-table-wrap tp-frame-wrap">
         <table class="mp-table tp-frame-table">
           <thead>
-            <tr><th>序号</th><th>时间</th><th>方向</th><th>类别</th><th>功能</th><th>摘要</th><th>长度</th></tr>
+            <tr><th>序号</th><th>时间</th><th>方向</th><th>类别</th><th>协议</th><th>功能</th><th>TID</th><th>功能段</th><th>摘要</th><th>长度</th></tr>
           </thead>
           <tbody>
             <template v-for="frame in filteredFrames" :key="frame.index">
-              <tr class="tp-frame-row" @click="toggleFrame(frame.index)">
+              <tr class="tp-frame-row" title="点击查看核心属性与功能段" @click="toggleFrame(frame.index)">
                 <td class="mono">{{ frame.index }}</td>
                 <td class="mono">{{ frame.time }}</td>
                 <td>{{ frame.direction === 'request' ? '请求' : '响应' }}</td>
                 <td><span class="mp-tag" :class="frame.category">{{ categoryLabel(frame.category) }}</span></td>
+                <td>{{ frame.protocol }}</td>
                 <td class="mono">{{ frame.function }}</td>
+                <td class="mono">{{ frame.tid ?? '—' }}</td>
+                <td class="tp-seg-label">{{ frameSegmentLabel(frame) }}</td>
                 <td class="mp-evidence">{{ frame.summary }}</td>
                 <td class="mono">{{ frame.bytes }}</td>
               </tr>
               <tr v-if="expandedFrames.includes(frame.index)">
-                <td colspan="7" class="tp-source-cell">
-                  <pre class="tp-source">{{ frame.hex }}</pre>
+                <td colspan="10" class="tp-source-cell">
+                  <div class="tp-frame-detail">
+                    <div class="tp-frame-props">
+                      <div v-for="item in frameProperties(frame)" :key="item.label">
+                        <span>{{ item.label }}</span><b class="mono">{{ item.value }}</b>
+                      </div>
+                    </div>
+                    <div v-if="frame.segments?.length" class="tp-segments">
+                      <div class="tp-segments-title">功能段</div>
+                      <div class="mp-table-wrap">
+                        <table class="mp-table tp-segment-table">
+                          <thead><tr><th>功能段</th><th>偏移</th><th>长度</th><th>字节</th></tr></thead>
+                          <tbody>
+                            <tr v-for="(segment, segmentIndex) in frame.segments" :key="`${segment.name}-${segmentIndex}`">
+                              <td>{{ segment.name }}</td>
+                              <td class="mono">{{ segment.offset }}</td>
+                              <td class="mono">{{ segment.length }}</td>
+                              <td class="mono tp-seg-value">{{ segment.value }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <pre class="tp-source">{{ frame.hex }}</pre>
+                  </div>
                 </td>
               </tr>
             </template>
             <tr v-if="!filteredFrames.length">
-              <td colspan="7" class="mp-empty">没有符合筛选条件的流量帧</td>
+              <td colspan="10" class="mp-empty">没有符合筛选条件的流量帧</td>
             </tr>
           </tbody>
         </table>
@@ -927,7 +1020,19 @@ onUnmounted(stopPolling);
             本次解析 <code>{{ runLabel(currentRunName) }}</code>
             <span class="mp-muted">{{ plcLabel(currentPlcs) }}</span>
           </span>
-          <span class="mp-chip ok"><CheckCircle2 :size="13" />解析成功 · {{ units.length }} 个单元</span>
+          <button
+            class="mp-btn primary"
+            type="button"
+            :disabled="!canExtract"
+            title="提取关键变量、值域与物理模型参数"
+            @click="extract"
+          >
+            <LoaderCircle v-if="extracting" :size="15" class="mp-spin" />
+            <Play v-else :size="15" fill="currentColor" />{{ extracting ? '提取中…' : variables ? '重新解析变量与值域' : '解析变量与值域' }}
+          </button>
+          <span class="mp-chip ok">
+            <CheckCircle2 :size="13" />{{ variables ? '解析完成' : '源码已逆向' }} · {{ units.length }} 个单元
+          </span>
           <button class="mp-btn" type="button" @click="unitsCollapsed = !unitsCollapsed">
             {{ unitsCollapsed ? '展开' : '收起' }}
           </button>
@@ -1131,7 +1236,7 @@ onUnmounted(stopPolling);
               v-if="deleteTarget !== run.name"
               class="mp-btn"
               type="button"
-              :disabled="isRunning || starting || parsing || deleting"
+              :disabled="isRunning || starting || busy || deleting"
               @click="openRun(run.name)"
             >
               {{ currentRunName === run.name ? '当前' : '查看' }}
@@ -1158,7 +1263,7 @@ onUnmounted(stopPolling);
               v-else
               class="mp-btn danger"
               type="button"
-              :disabled="isRunning || starting || parsing || deleting"
+              :disabled="isRunning || starting || busy || deleting"
               @click="deleteTarget = run.name"
             >
               删除

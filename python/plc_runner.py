@@ -222,8 +222,142 @@ def make_frame(index: int, timestamp: float, direction: str, category: str, prot
         "bytes": len(payload),
         "hex": payload.hex(),
     }
+    frame.update(describe_frame(payload, protocol, direction, function))
     frame.update(extra)
     return frame
+
+
+def _hex_preview(data: bytes, limit: int = 64) -> str:
+    text = data[:limit].hex(" ")
+    if len(data) > limit:
+        text += f" …（共 {len(data)} 字节）"
+    return text
+
+
+def describe_frame(payload: bytes, protocol: str, direction: str, function: str) -> dict:
+    """提取 MBAP / UMAS / Modbus 的核心属性和功能段，供页面展开查看。"""
+    info: dict = {}
+    segments: list[dict] = []
+    if len(payload) >= 7:
+        tid, _pid, length, unit = struct.unpack_from(">HHHB", payload, 0)
+        info.update({"tid": tid, "unitId": unit, "mbapLength": length})
+        segments.append({
+            "name": "MBAP 头", "offset": 0, "length": 7,
+            "value": payload[:7].hex(" "),
+        })
+
+    pdu = payload[7:]
+    if protocol == "UMAS" and len(pdu) >= 3 and pdu[0] == 0x5A:
+        info["functionCode"] = "0x5A"
+        info["subfunction"] = function
+        if direction == "request":
+            info["session"] = f"0x{pdu[1]:02X}"
+        else:
+            info["status"] = f"0x{pdu[2]:02X}"
+            info["session"] = f"0x{pdu[3]:02X}" if function == "0x10" and len(pdu) >= 4 \
+                else f"0x{pdu[1]:02X}"
+
+        if function == "0x10" and direction == "request" and len(pdu) >= 8:
+            host_len = pdu[7]
+            segments.append({
+                "name": "UMAS 会话头", "offset": 7, "length": 8,
+                "value": pdu[:8].hex(" "),
+            })
+            if host_len:
+                host = pdu[8:8 + host_len].decode("ascii", "replace")
+                segments.append({
+                    "name": "主机名", "offset": 15, "length": host_len, "value": host,
+                })
+        elif function == "0x10":
+            segments.append({
+                "name": "UMAS 会话应答头", "offset": 7, "length": min(4, len(pdu)),
+                "value": pdu[:4].hex(" "),
+            })
+        elif function == "0x33" and direction == "request":
+            segments.append({
+                "name": "UMAS 请求头", "offset": 7, "length": len(pdu),
+                "value": pdu.hex(" "),
+            })
+        elif function == "0x33":
+            if len(pdu) >= 9:
+                info["totalBytes"] = struct.unpack_from("<I", pdu, 5)[0]
+                info["dataLength"] = 4
+            segments.append({
+                "name": "UMAS 应答头", "offset": 7, "length": min(5, len(pdu)),
+                "value": pdu[:5].hex(" "),
+            })
+            if len(pdu) > 5:
+                segments.append({
+                    "name": "总长度字段", "offset": 12, "length": len(pdu) - 5,
+                    "value": pdu[5:9].hex(" "),
+                })
+        elif function == "0x34" and direction == "request":
+            if len(pdu) >= 7:
+                info["recordIndex"] = struct.unpack_from("<H", pdu, 5)[0]
+            segments.append({
+                "name": "UMAS 记录请求头", "offset": 7, "length": len(pdu),
+                "value": pdu.hex(" "),
+            })
+        elif function == "0x34":
+            if len(pdu) >= 7:
+                info["dataLength"] = struct.unpack_from("<H", pdu, 5)[0]
+            segments.append({
+                "name": "UMAS 记录头", "offset": 7, "length": min(7, len(pdu)),
+                "value": pdu[:7].hex(" "),
+            })
+            if len(pdu) > 7:
+                segments.append({
+                    "name": "记录数据", "offset": 14, "length": len(pdu) - 7,
+                    "value": _hex_preview(pdu[7:]),
+                })
+        elif function == "0x35" and direction == "request" and len(pdu) >= 7:
+            info["recordIndex"] = struct.unpack_from("<H", pdu, 5)[0]
+            segments.append({
+                "name": "UMAS 结束请求头", "offset": 7, "length": len(pdu),
+                "value": pdu.hex(" "),
+            })
+        elif function == "0x35":
+            segments.append({
+                "name": "UMAS 结束应答", "offset": 7, "length": len(pdu),
+                "value": pdu.hex(" "),
+            })
+    elif protocol == "Modbus/TCP" and pdu:
+        fc = pdu[0]
+        info["functionCode"] = f"0x{fc:02X}"
+        segments.append({
+            "name": "PDU 功能码", "offset": 7, "length": 1, "value": pdu[:1].hex(" "),
+        })
+        if fc in (1, 2, 3, 4):
+            if direction == "request" and len(pdu) >= 5:
+                info["startAddress"] = struct.unpack_from(">H", pdu, 1)[0]
+                info["quantity"] = struct.unpack_from(">H", pdu, 3)[0]
+                segments.append({
+                    "name": "起始地址", "offset": 8, "length": 2, "value": pdu[1:3].hex(" "),
+                })
+                segments.append({
+                    "name": "读取数量", "offset": 10, "length": 2, "value": pdu[3:5].hex(" "),
+                })
+            elif direction == "response" and len(pdu) >= 2:
+                byte_count = pdu[1]
+                info["byteCount"] = byte_count
+                info["dataLength"] = byte_count
+                segments.append({
+                    "name": "字节数", "offset": 8, "length": 1, "value": pdu[1:2].hex(" "),
+                })
+                if len(pdu) > 2:
+                    segments.append({
+                        "name": "数据", "offset": 9, "length": len(pdu) - 2,
+                        "value": _hex_preview(pdu[2:]),
+                    })
+        elif fc & 0x80 and len(pdu) >= 2:
+            info["exception"] = f"0x{pdu[1]:02X}"
+            segments.append({
+                "name": "异常码", "offset": 8, "length": 1, "value": pdu[1:2].hex(" "),
+            })
+
+    info["segments"] = segments
+    return info
+
 
 
 def build_upload_frames(reader_frames, client_ip: str, client_port: int, ip: str, port: int):
@@ -260,11 +394,15 @@ def build_upload_frames(reader_frames, client_ip: str, client_port: int, ip: str
         display.append(make_frame(
             len(display) + 1, t0, "request", "upload", "UMAS", f"0x{function:02X}",
             request_summary, request_tcp, recordIndex=record_index,
+            source=f"{client_ip}:{client_port}" if client_ip else "本机",
+            destination=f"{ip}:{port}",
         ))
         if response_tcp:
             display.append(make_frame(
                 len(display) + 1, t1, "response", "upload", "UMAS", f"0x{function:02X}",
                 response_summary, response_tcp, recordIndex=record_index,
+                source=f"{ip}:{port}",
+                destination=f"{client_ip}:{client_port}" if client_ip else "本机",
             ))
     session = TcpSession(client_ip, client_port, ip, port, packets)
     return display, session
@@ -308,6 +446,8 @@ def collect_modbus(
                             0, t0, "request", category, "Modbus/TCP", function_name,
                             f"{label} {area}{offset}–{offset + quantity - 1}（{quantity}）",
                             request, address=f"{area}{offset}", count=quantity,
+                            source=f"{client_ip}:{client_port}" if client_ip else "本机",
+                            destination=f"{ip}:{port}",
                         ))
 
                         parsed = ModbusReader.parse(function, response)
@@ -334,6 +474,8 @@ def collect_modbus(
                             0, t1, "response", category, "Modbus/TCP", function_name,
                             response_summary, response, address=f"{area}{offset}",
                             count=quantity, values=values,
+                            source=f"{ip}:{port}",
+                            destination=f"{client_ip}:{client_port}" if client_ip else "本机",
                         ))
                         offset += quantity
                 cycles += 1
@@ -572,6 +714,8 @@ def cmd_parse(args: argparse.Namespace) -> int:
     for name in os.listdir(out_dir):
         if name.endswith(".st"):
             os.remove(os.path.join(out_dir, name))
+    # 逆向源码后旧变量表已失效，必须重新执行变量解析。
+    shutil.rmtree(os.path.join(run_dir, "03_变量"), ignore_errors=True)
     written = stsource.write_all(sources, out_dir)
     st_files = [os.path.basename(path) for path in written]
 

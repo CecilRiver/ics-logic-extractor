@@ -13,6 +13,13 @@ export interface TrafficUnit {
 
 export type TrafficCategory = 'upload' | 'runtime' | 'io';
 
+export interface TrafficSegment {
+  name: string;
+  offset: number;
+  length: number;
+  value: string;
+}
+
 export interface TrafficFrame {
   index: number;
   time: string;
@@ -27,6 +34,22 @@ export interface TrafficFrame {
   address?: string;
   count?: number;
   values?: number[] | null;
+  tid?: number | null;
+  unitId?: number | null;
+  mbapLength?: number | null;
+  source?: string;
+  destination?: string;
+  functionCode?: string;
+  subfunction?: string;
+  status?: string;
+  session?: string;
+  dataLength?: number | null;
+  totalBytes?: number | null;
+  byteCount?: number | null;
+  startAddress?: number | null;
+  quantity?: number | null;
+  exception?: string;
+  segments?: TrafficSegment[];
 }
 
 export interface TrafficPoint {
