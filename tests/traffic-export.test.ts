@@ -109,11 +109,16 @@ describe('traffic exports', () => {
 
   it('includes quality scores in the JSON export', () => {
     const payload = JSON.parse(buildResultJson(result, variables, '2026-11-18 19:10:00')) as {
+      result: { units: Array<Record<string, unknown>>; traffic?: unknown; unitCount: number; variableCount: number };
       variables: Array<{ name: string; quality: { score: number; level: string } }>;
     };
     expect(payload.variables[0]).toMatchObject({
       name: 'Deviation',
       quality: { score: 90, level: '高' },
     });
+    expect(payload.result.unitCount).toBe(1);
+    expect(payload.result.variableCount).toBe(2);
+    expect(payload.result.units[0]).not.toHaveProperty('text');
+    expect(payload.result).not.toHaveProperty('traffic');
   });
 });

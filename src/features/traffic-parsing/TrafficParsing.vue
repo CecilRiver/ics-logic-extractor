@@ -1047,7 +1047,12 @@ onUnmounted(stopPolling);
         <button class="mp-btn" type="button" :disabled="!hasVariables" @click="exportVariablesMd">变量表 Markdown</button>
         <button class="mp-btn" type="button" @click="exportReport">分析报告</button>
         <button class="mp-btn" type="button" @click="exportEvidence">验收证据</button>
-        <button class="mp-btn" type="button" @click="exportJson">结果 JSON</button>
+        <button
+          class="mp-btn"
+          type="button"
+          title="仅导出运行信息、单元摘要与变量表，不含流量帧与源码全文"
+          @click="exportJson"
+        >结果 JSON</button>
       </div>
 
       <div class="tp-table-toolbar">

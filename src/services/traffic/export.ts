@@ -271,11 +271,27 @@ export function buildResultJson(
   variables: TrafficVariable[] | null,
   generatedAt?: string,
 ): string {
+  const units = result.units.map(({ text: _text, ...unit }) => unit);
   return JSON.stringify(
     {
       generatedAt: generatedStamp(generatedAt),
-      result,
-      variables: variables?.map((row) => ({ ...row, quality: variableQuality(row) })) ?? null,
+      result: {
+        plc: result.plc,
+        plcs: result.plcs ?? [result.plc],
+        port: result.port,
+        session: result.session,
+        imageBytes: result.imageBytes,
+        records: result.records,
+        sha256: result.sha256,
+        declarations: result.declarations,
+        stu: result.stu,
+        runDir: result.runDir,
+        parsed: result.parsed ?? false,
+        unitCount: units.length,
+        variableCount: variables?.length ?? 0,
+        units,
+      },
+      variables: variables?.map((row) => ({ ...row, quality: variableQuality(row) })) ?? [],
     },
     null,
     2,
